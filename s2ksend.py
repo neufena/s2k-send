@@ -21,8 +21,10 @@ by the small C++ helper s2kexec (build it with `make`).
 """
 import argparse
 import array
+import collections
 import datetime
 import os
+import re
 import select
 import shutil
 import subprocess
@@ -35,7 +37,8 @@ AKAI_CHARS = '0123456789 ABCDEFGHIJKLMNOPQRSTUVWXYZ#+-.'
 ADDR = 0                    # SysEx device address used by MESA/the proven code
 PCM_BLOCK = 16384           # bytes per bulk write block (proven size)
 MAX_STATUS_POLLS = 128
-RATE = 44100                # only 44.1 kHz mono 16-bit is supported (the proven profile)
+RATE = 44100                # default / highest rate
+RATES = (44100, 22050)      # the two rates the S2000 supports; 16-bit mono per sample
 
 # Captured MESA wire template for a sample header: type 3, 44.1 kHz, mono, no loop,
 # play-to-end. Only name, root note, length, start/end and rate are patched.
@@ -73,6 +76,11 @@ def unnibbles(wire):
     return bytes(wire[i] | (wire[i + 1] << 4) for i in range(0, len(wire), 2))
 
 
+def safe_stem(name):
+    """File-name-safe version of an Akai name (runs of spaces become one underscore)."""
+    return re.sub(r'\s+', '_', name.strip())
+
+
 def akai_name(text):
     """Sanitise free text into a valid Akai name (max 12 chars of the Akai set)."""
     t = ''.join(c if c in AKAI_CHARS else ('-' if c in '_' else '') for c in text.upper())
@@ -90,9 +98,10 @@ def decode_name(raw12):
 
 
 def sample_header(name, root, frames, rate=RATE):
-    if not (1 <= frames <= 0xFFFFFFFF and 0 <= root < 128):
-        raise SendError('bad frames/root')
+    if not (1 <= frames <= 0xFFFFFFFF and 0 <= root < 128) or rate not in RATES:
+        raise SendError('bad frames/root/rate')
     h = bytearray(SAMPLE_TEMPLATE)
+    h[1] = 1 if rate == 44100 else 0      # bandwidth: 1 = 20 kHz, 0 = 10 kHz (Ohsaki's S3000 format notes)
     h[2] = root
     h[3:15] = encode_name(name)
     h[26:30] = frames.to_bytes(4, 'little')
@@ -232,6 +241,27 @@ def pcm_diagnosis(want, got):
     return '; '.join(out)
 
 
+def partner_map(pairs):
+    """pairs: [(slot_l, field_l, slot_r, field_r)] read from real stereo pairs (field = bytes 136-137).
+    If each field is the address of the partner's entry, field_l = B + s*slot_r and field_r = B + s*slot_l.
+    Returns (stride, base, consistent_with_all, notes)."""
+    notes, fits = [], []
+    for sl, fl, sr, fr in pairs:
+        if sl == sr or (fl - fr) % (sr - sl):
+            notes.append(f'pair at slots {sl}/{sr}: fields 0x{fl:04x}/0x{fr:04x} do not fit a linear address rule')
+            continue
+        stride = (fl - fr) // (sr - sl)
+        fits.append((stride, fl - stride * sr, sl, sr))
+    if not fits:
+        return None, None, False, notes
+    stride, base = fits[0][:2]
+    ok = all(f[:2] == (stride, base) for f in fits) and not notes
+    for f in fits[1:]:
+        if f[:2] != (stride, base):
+            notes.append(f'pair at slots {f[2]}/{f[3]} gives stride {f[0]}, base 0x{f[1]:04x}: not the same rule')
+    return stride, base, ok, notes
+
+
 # --------------------------------------------------------------------------- session
 class Session:
     """The protocol, independent of what is on the other end of the bus."""
@@ -241,6 +271,10 @@ class Session:
         self.deadline = time.monotonic() + budget_s
         self.commands = 0
         self.mutated = False         # a write command has been dispatched
+        self.block = PCM_BLOCK       # bytes per raw audio write
+        self.dump_dir = '.'          # where mismatch dumps go
+        self.inventory_after = None  # last inventory read; reused as the next sample's "before"
+        self.stats = dict(w_bytes=0, w_s=0.0, r_bytes=0, r_s=0.0)
 
     def cmd(self, cdb, direction, data=b'', length=0):
         if time.monotonic() > self.deadline:
@@ -369,11 +403,14 @@ class Session:
             raise VerifyError(f'S2000 advertises {advertised} bytes for the audio read, expected {nbytes} '
                               f'(asked for {nbytes // 2} words)')
         got = bytearray()
+        t0 = time.monotonic()
         while len(got) < nbytes:
             n = min(65534, nbytes - len(got))
             c = bytearray(transfer_cdb(14, n))
             c[5] = 128
             got += self.cmd(bytes(c), 'in', length=n)
+        self.stats['r_s'] += time.monotonic() - t0
+        self.stats['r_bytes'] += nbytes
         self.mode(False)
         return bytes(got)
 
@@ -382,10 +419,10 @@ class Session:
         if got == pcm:
             return
         for suffix, data in (('expected', pcm), ('readback', got)):
-            with open(f'{label}-{suffix}.pcm', 'wb') as f:
+            with open(os.path.join(self.dump_dir, f'{label}-{suffix}.pcm'), 'wb') as f:
                 f.write(data)
         raise VerifyError(f'audio read back from the S2000 DIFFERS from the file: {pcm_diagnosis(pcm, got)} '
-                          f'(raw data saved as {label}-expected.pcm / {label}-readback.pcm)')
+                          f'(raw data saved as {os.path.join(self.dump_dir, label)}-expected.pcm / -readback.pcm)')
 
     def preflight(self, names, frame_counts):
         """One inventory before anything is written: names free, headers and memory enough for ALL samples."""
@@ -398,12 +435,13 @@ class Session:
             raise SendError('not enough free sample headers on the S2000')
         if inv.free_words < sum(frame_counts):
             raise SendError(f'needs {sum(frame_counts)} words but the S2000 has only {inv.free_words} free')
+        self.inventory_after = inv        # the first sample reuses this instead of reading the lists again
         return inv
 
     # ---- the transfer
-    def send_sample(self, name, root, pcm, verify_pcm=True, progress=lambda m: None):
+    def send_sample(self, name, root, pcm, verify_pcm=True, progress=lambda m: None, rate=RATE):
         frames = len(pcm) // 2
-        before = self.inventory()
+        before = self.inventory_after if self.inventory_after is not None else self.inventory()
         enc = encode_name(name)
         if enc in before.samples:
             raise SendError(f'a sample named {name!r} already exists on the S2000; choose another --name')
@@ -412,18 +450,23 @@ class Session:
         if before.free_words < frames:
             raise SendError(f'sample needs {frames} words but the S2000 has only {before.free_words} free')
         progress(f'S2000 has {len(before.samples)} samples, {before.free_words} free words')
-        header = sample_header(name, root, frames)
+        header = sample_header(name, root, frames, rate)
         progress('sending sample header')
         self.control(sysex_sample(header, len(before.samples)), 'sample', bulk=True, keep=True)
-        for at in range(0, len(pcm), PCM_BLOCK):
-            blk = pcm[at:at + PCM_BLOCK]
+        blk_n = self.block
+        for at in range(0, len(pcm), blk_n):
+            blk = pcm[at:at + blk_n]
+            t0 = time.monotonic()
             self.cmd(transfer_cdb(12, len(blk), raw=True), 'out', blk)
-            if (at // PCM_BLOCK) % 16 == 0 or at + PCM_BLOCK >= len(pcm):
-                progress(f'  PCM {min(at + PCM_BLOCK, len(pcm))}/{len(pcm)} bytes')
+            self.stats['w_s'] += time.monotonic() - t0
+            self.stats['w_bytes'] += len(blk)
+            if (at // blk_n) % 16 == 0 or at + blk_n >= len(pcm):
+                progress(f'  PCM {min(at + blk_n, len(pcm))}/{len(pcm)} bytes')
         self.mode(False)
         progress('finalising')
         self.control(post_object(), 'ack')
         after = self.inventory()
+        self.inventory_after = after
         if after.programs != before.programs or enc not in after.samples \
                 or sorted(after.samples) != sorted(before.samples + [enc]):
             raise SendError('inventory after the transfer is not what was expected')
@@ -440,7 +483,7 @@ class Session:
         progress(f'header checked (sample slot {index})' + (' with notes above' if diffs else ''))
         if verify_pcm:
             progress('reading audio back to verify')
-            self.verify_audio(index, pcm, name.strip().replace(' ', '_'))
+            self.verify_audio(index, pcm, safe_stem(name))
             progress('audio verified byte-for-byte')
         return index
 
@@ -519,7 +562,7 @@ class MockS2000:
         elif op == 0:
             used = sum(len(s['pcm']) // 2 for s in self.samples)
             self.out += (bytes([0xF0, 0x47, ADDR, 1, 0x48, 0, 0]) + self._v7(256, 2) + self._v7(256 - len(self.samples), 2)
-                         + self._v7(2_000_000, 4) + self._v7(self.free_words - used, 4) + b'\0\xF7')
+                         + self._v7(max(2_000_000, self.free_words), 4) + self._v7(self.free_words - used, 4) + b'\0\xF7')
         elif op == 0x0B:
             if not self.bulk:
                 raise SendError('mock: sample header outside bulk mode')
@@ -529,6 +572,9 @@ class MockS2000:
             header = unnibbles(f[7:-1])
             if len(header) != 192:
                 raise SendError('mock: header length')
+            rate = int.from_bytes(header[138:140], 'little')
+            if rate not in RATES or header[1] != (1 if rate == 44100 else 0):
+                raise SendError('mock: rate / bandwidth fields inconsistent')
             self.pending, self.pcm_in = header, bytearray()
             self.out += bytes([0xF0, 0x7E, ADDR, 0x7C, 0, 0xF7])         # WAIT first, then ACK
             self.followup = bytes([0xF0, 0x7E, ADDR, 0x7F, 0, 0xF7])
@@ -626,10 +672,37 @@ def _le_bytes(arr):
     return arr.tobytes()
 
 
-def load_audio(path, mono_mix=False):
-    """Return ([PCM bytes per channel], converted?). Each channel is raw 16-bit little-endian, 44.1 kHz.
-    A 1- or 2-channel 16-bit 44.1 kHz WAV is used as is; anything else is converted with sox, with dither
-    disabled (-D) so that converting the same file twice gives identical audio. mono_mix averages L and R."""
+def source_rate(path):
+    """Sample rate of the source file (wave module first, then soxi), default RATE."""
+    try:
+        with wave.open(path, 'rb') as w:
+            return w.getframerate()
+    except (wave.Error, EOFError):
+        pass
+    if shutil.which('soxi'):
+        r = subprocess.run(['soxi', '-r', path], capture_output=True, text=True)
+        try:
+            return int(float(r.stdout.strip()))
+        except ValueError:
+            pass
+    return RATE
+
+
+def choose_rate(src, option='auto'):
+    """The S2000 supports 44.1 and 22.05 kHz. auto: sources at or below 22.05 kHz are sent at 22.05 kHz
+    (half the memory, nothing lost); anything above is sent at 44.1 kHz."""
+    if option in ('44100', '22050', 44100, 22050):
+        return int(option)
+    return 22050 if src <= 22050 else 44100
+
+
+def load_audio(path, mono_mix=False, rate='auto'):
+    """Return ([PCM bytes per channel], converted?, rate). Each channel is raw 16-bit little-endian.
+    A 1- or 2-channel 16-bit WAV already at the chosen rate is used as is; anything else is converted with
+    sox, with dither disabled (-D) so that converting the same file twice gives identical audio.
+    mono_mix averages L and R."""
+    target = choose_rate(source_rate(path), rate) if os.path.isfile(path) else RATE
+
     def read(p):
         with wave.open(p, 'rb') as w:
             ch, sw, fr, ct = w.getnchannels(), w.getsampwidth(), w.getframerate(), w.getcomptype()
@@ -637,7 +710,7 @@ def load_audio(path, mono_mix=False):
                 if mono_mix:
                     raise wave.Error('format')           # let sox mix it down
                 raise SendError(f'{ch}-channel audio: use --mono-mix, or reduce it to stereo first')
-            if (sw, fr, ct) != (2, RATE, 'NONE'):
+            if (sw, fr, ct) != (2, target, 'NONE'):
                 raise wave.Error('format')
             raw = w.readframes(w.getnframes())
         a = array.array('h')
@@ -654,11 +727,11 @@ def load_audio(path, mono_mix=False):
     except (wave.Error, EOFError):
         converted = True
         if not shutil.which('sox'):
-            raise SendError('file is not a 16-bit 44.1 kHz WAV and sox is not installed to convert it '
+            raise SendError(f'{path} is not a 16-bit WAV at {target} Hz and sox is not installed to convert it '
                             '(sudo apt install sox)')
         with tempfile.TemporaryDirectory() as t:
             out = os.path.join(t, 'c.wav')
-            cmd = ['sox', '-D', path, '-b', '16', '-r', str(RATE)] + (['-c', '1'] if mono_mix else []) + [out]
+            cmd = ['sox', '-D', path, '-b', '16', '-r', str(target)] + (['-c', '1'] if mono_mix else []) + [out]
             r = subprocess.run(cmd, capture_output=True, text=True)
             if r.returncode:
                 raise SendError('sox could not convert the file: ' + r.stderr.strip()[-200:])
@@ -667,24 +740,38 @@ def load_audio(path, mono_mix=False):
         chans = [array.array('h', [(l + r) >> 1 for l, r in zip(*chans)])]
     if not chans or len(chans[0]) < 1:
         raise SendError('no audio in file')
-    return [_le_bytes(c) for c in chans], converted
+    return [_le_bytes(c) for c in chans], converted, target
 
 
-def load_pcm(path):
-    """Single-channel convenience wrapper (used by --check)."""
-    chans, converted = load_audio(path)
-    if len(chans) != 1:
-        raise SendError('this file is stereo: compare each half separately using the NAME-L-sent.wav / '
-                        'NAME-R-sent.wav files, or pass a mono file')
-    return chans[0], converted
+Item = collections.namedtuple('Item', 'name pcm rate source converted')
 
 
-def sample_names(base, channels):
-    """Akai names for the sample(s): one 12-char name for mono, NAME-L / NAME-R (name max 10 chars) for stereo."""
-    if channels == 1:
-        return [akai_name(base)]
-    stem = akai_name(base)[:10].strip() or 'SAMPLE'
-    return [stem + '-L', stem + '-R']
+def sample_names(base, channels, used=()):
+    """Akai names for one file: a 12-char name for mono. For stereo the S2000's own convention: the name
+    (max 10 chars) padded to 10, then '-L' / '-R' as the LAST two of the 12 characters.
+    Names already in `used` are avoided by replacing the end of the name with a number."""
+    stem = akai_name(base)
+    maxlen = 12 if channels == 1 else 10
+    for n in range(1, 1000):
+        suffix = '' if n == 1 else str(n)
+        cand = (stem[:maxlen - len(suffix)].strip() or 'SAMPLE') + suffix
+        names = [cand] if channels == 1 else [cand.ljust(10) + '-L', cand.ljust(10) + '-R']
+        if not any(x in used for x in names):
+            return names
+    raise SendError(f'cannot find a free name for {base!r}')
+
+
+def plan_items(paths, mono_mix=False, rate='auto', name=None):
+    """Load every file (failing early, before the bus is touched) and give every sample a unique Akai name."""
+    if name and len(paths) > 1:
+        raise SendError('--name only makes sense with a single file; names come from the file names in a batch')
+    loaded = [(p,) + load_audio(p, mono_mix, rate) for p in paths]
+    used, items = set(), []
+    for p, chans, converted, r in loaded:
+        for nm, ch in zip(sample_names(name or os.path.splitext(os.path.basename(p))[0], len(chans), used), chans):
+            items.append(Item(nm, ch, r, p, converted))
+            used.add(nm)
+    return items
 
 
 # --------------------------------------------------------------------------- piscsi management
@@ -705,35 +792,51 @@ def restart_piscsi(say):
 
 
 # --------------------------------------------------------------------------- main
-def rehearse(pcms, names, root, verify, say):
-    words = sum(len(p) // 2 for p in pcms)
-    s = MockS2000(samples=['EXISTING'], free_words=max(1_000_000, words + 1000))
-    sess = Session(MockBus(s), lambda m: None, budget_s=600)
-    sess.preflight(names, [len(p) // 2 for p in pcms])
-    for name, pcm in zip(names, pcms):
-        idx = sess.send_sample(name, root, pcm, verify, progress=lambda m: None)
-        if s.samples[idx]['pcm'] != pcm or idx != len(s.samples) - 1:
+def rehearse(items, root, verify, say, block=PCM_BLOCK):
+    words = sum(len(i.pcm) // 2 for i in items)
+    m = MockS2000(samples=['EXISTING'], free_words=max(1_000_000, words + 1000))
+    sess = Session(MockBus(m), lambda x: None, budget_s=600)
+    sess.block = block
+    sess.dump_dir = tempfile.gettempdir()
+    sess.preflight([i.name for i in items], [len(i.pcm) // 2 for i in items])
+    for it in items:
+        idx = sess.send_sample(it.name, root, it.pcm, verify, rate=it.rate)
+        if m.samples[idx]['pcm'] != it.pcm or idx != len(m.samples) - 1:
             raise SendError('rehearsal: audio mismatch')
     say(f'rehearsal OK ({sess.commands} commands against the simulated S2000)')
     return sess.commands
 
 
+def describe(items, say):
+    for it in items:
+        frames = len(it.pcm) // 2
+        say(f'  {it.name:12s} {frames:>9d} frames {frames / it.rate:7.2f} s  {it.rate} Hz  {len(it.pcm) / 1000:8.0f} KB'
+            f'   <- {os.path.basename(it.source)}' + ('  (converted by sox)' if it.converted else ''))
+
+
 def main(argv=None):
-    ap = argparse.ArgumentParser(description='Send a WAV to an Akai S2000 via PiSCSI (SCSI initiator).')
-    ap.add_argument('wav', nargs='?')
-    ap.add_argument('--name', help='sample name on the S2000 (default: from the file name)')
+    ap = argparse.ArgumentParser(description='Send WAV files to an Akai S2000 via PiSCSI (SCSI initiator).')
+    ap.add_argument('wavs', nargs='*', metavar='WAV', help='one or more WAV files')
+    ap.add_argument('--name', help='sample name on the S2000 (single file only; default: from the file name)')
     ap.add_argument('--root', type=int, default=60, help='root note, MIDI number (default 60)')
+    ap.add_argument('--rate', choices=['auto', '44100', '22050'], default='auto',
+                    help='sample rate on the S2000. auto: 22050 for sources at or below 22.05 kHz, else 44100')
     ap.add_argument('--target', type=int, default=6, help='S2000 SCSI ID (default 6)')
     ap.add_argument('--initiator', type=int, default=7, help="the Pi's SCSI ID (default 7; the Mac must be off/disconnected)")
     ap.add_argument('--helper', default=os.path.join(os.path.dirname(os.path.abspath(__file__)), 's2kexec'))
     ap.add_argument('--manage-piscsi', action='store_true', help='stop the piscsi service before, restart it after')
-    ap.add_argument('--no-verify-pcm', action='store_true', help='skip reading the audio back')
+    ap.add_argument('--no-verify-pcm', action='store_true', help='skip reading the audio back (faster)')
+    ap.add_argument('--block', type=int, choices=[8192, 16384, 32768], default=PCM_BLOCK,
+                    help='bytes per audio write (default 16384, the size proven on hardware; MESA uses up to 32768)')
     ap.add_argument('--mono-mix', action='store_true',
-                    help='stereo file: mix to ONE mono sample (default: two samples NAME-L and NAME-R)')
+                    help='stereo files: mix to ONE mono sample (default: two samples NAME-L and NAME-R)')
+    ap.add_argument('--sent-dir', default='s2k-sent', help='where the exact audio sent is saved (default s2k-sent)')
     ap.add_argument('--rehearse-only', action='store_true', help='only run the simulated rehearsal')
     ap.add_argument('--probe', action='store_true', help='just INQUIRY the target and exit')
     ap.add_argument('--check', type=int, metavar='SLOT',
                     help='READ-ONLY: show the header of the sample in SLOT (0 = first); with a WAV, also compare the audio')
+    ap.add_argument('--pairs', action='store_true',
+                    help='READ-ONLY: find -L/-R stereo pairs on the S2000 and decode their partner fields')
     ap.add_argument('--yes', action='store_true', help='do not ask for the SEND confirmation')
     ap.add_argument('--log', help='transcript file (default s2ksend-TIMESTAMP.log)')
     ap.add_argument('--selftest', action='store_true')
@@ -743,34 +846,39 @@ def main(argv=None):
     if a.selftest:
         import random
         random.seed(1)
+        rnd = lambda frames: bytes(random.randrange(256) for _ in range(frames * 2))
         for frames in (1, 8191, 8192, 8193, 20000):
-            pcm = bytes(random.randrange(256) for _ in range(frames * 2))
-            rehearse([pcm], ['SELFTEST'], 60, True, lambda m: None)
-            pcm2 = bytes(random.randrange(256) for _ in range(frames * 2))
-            rehearse([pcm, pcm2], sample_names('SELFTEST', 2), 60, True, lambda m: None)
+            for rate in RATES:
+                one = [Item('SELFTEST', rnd(frames), rate, 'x.wav', False)]
+                rehearse(one, 60, True, lambda m: None)
+                two = [Item(n, rnd(frames), rate, 'y.wav', False) for n in sample_names('SELFTEST', 2)]
+                rehearse(one[:0] + two + [Item('OTHER', rnd(frames), rate, 'z.wav', False)], 60, True, lambda m: None,
+                         block=32768)
         say('selftest OK')
         return 0
-    if not a.probe and a.check is None and not a.wav:
-        ap.error('give a WAV file')
+    if not a.probe and not a.pairs and a.check is None and not a.wavs:
+        ap.error('give at least one WAV file')
+    if a.check is not None and len(a.wavs) > 1:
+        ap.error('--check takes at most one WAV file')
     if not 0 <= a.root < 128 or a.target == a.initiator or not 0 <= a.target < 8 or not 0 <= a.initiator < 8:
         ap.error('bad --root/--target/--initiator')
 
     try:
         if a.probe:
             return probe(a, say)
+        if a.pairs:
+            return pairs_report(a, say)
         if a.check is not None:
             return check(a, say)
-        pcms, converted = load_audio(a.wav, a.mono_mix)
-        names = sample_names(a.name or os.path.splitext(os.path.basename(a.wav))[0], len(pcms))
-        frames = len(pcms[0]) // 2
-        say(f'{a.wav}: {frames} frames ({frames / RATE:.2f} s)'
-            + (', stereo -> two separate mono samples ' + ' and '.join(repr(n) for n in names) + ' (not linked as a pair)'
-               if len(pcms) == 2 else f', mono, Akai name {names[0]!r}')
-            + f', root {a.root}' + (' (converted by sox, no dither)' if converted else ''))
-        rehearse(pcms, names, a.root, not a.no_verify_pcm, say)
+        items = plan_items(a.wavs, a.mono_mix, a.rate, a.name)
+        say(f'{len(a.wavs)} file(s) -> {len(items)} sample(s), root {a.root}:')
+        describe(items, say)
+        if any(items[i].source == items[i + 1].source for i in range(len(items) - 1)):
+            say('(stereo files become two separate mono samples, NOT linked as a pair)')
+        rehearse(items, a.root, not a.no_verify_pcm, say, a.block)
         if a.rehearse_only:
             return 0
-        return physical(a, names, pcms, say)
+        return physical(a, items, say)
     except SendError as e:
         say(f'STOP: {e}')
         return 1
@@ -810,12 +918,61 @@ def probe(a, say):
             restart_piscsi(say)
 
 
+def pairs_report(a, say):
+    """Read-only: find -L/-R pairs on the S2000, read their stereo-partner fields, and see whether the values
+    follow a simple address rule. Nothing is written."""
+    logname = a.log or datetime.datetime.now().strftime('s2ksend-pairs-%Y%m%d-%H%M%S.log')
+    logf = open(logname, 'w', buffering=1)
+    bus = open_bus(a, say)
+    sess = Session(bus, lambda m: logf.write(m + '\n'), budget_s=600)
+    try:
+        say(bus.banner)
+        inv = sess.inventory()
+        names = [decode_name(n) for n in inv.samples]
+        say(f'{len(names)} samples on the S2000')
+        sides = {}
+        for i, n in enumerate(names):
+            if n[-2:] in ('-L', '-R'):
+                sides.setdefault(n[:-1], {})[n[-1]] = i
+        found = [(d['L'], d['R']) for d in sides.values() if 'L' in d and 'R' in d]
+        if not found:
+            say('no -L/-R pairs found (names ending in -L and -R with the same start)')
+            return 0
+        linked = []
+        for l, r in found:
+            fl = int.from_bytes(sess.read_header(l)[136:138], 'little')
+            fr = int.from_bytes(sess.read_header(r)[136:138], 'little')
+            say(f'  {names[l]!r} slot {l}: partner field 0x{fl:04x}   |   {names[r]!r} slot {r}: partner field 0x{fr:04x}')
+            if 0xFFFF in (fl, fr):
+                say('    not linked (0xffff = no partner)')
+            else:
+                linked.append((l, fl, r, fr))
+        if linked:
+            stride, base, ok, notes = partner_map(linked)
+            for n in notes:
+                say('  note: ' + n)
+            if stride is not None:
+                say(f'  rule that fits {"all" if ok else "the first"} linked pair(s): field = 0x{base:04x} + {stride} x slot of the partner')
+        say(f'Transcript: {logname}')
+        return 0
+    finally:
+        bus.close()
+        if a.manage_piscsi:
+            restart_piscsi(say)
+
+
 def check(a, say):
     """Read-only: uses only the inventory, header-read and audio-read requests that a normal send uses
     for verification. Nothing is written to the S2000."""
     logname = a.log or datetime.datetime.now().strftime('s2ksend-check-%Y%m%d-%H%M%S.log')
     logf = open(logname, 'w', buffering=1)
-    want, converted = (load_pcm(a.wav) if a.wav else (None, False))     # fail early, before PiSCSI is stopped
+    want, converted, want_rate = None, False, None
+    if a.wavs:                                        # fail early, before PiSCSI is stopped
+        chans, converted, want_rate = load_audio(a.wavs[0])
+        if len(chans) != 1:
+            raise SendError('this file is stereo: compare each half separately using the NAME-L / NAME-R files '
+                            'saved in s2k-sent, or pass a mono file')
+        want = chans[0]
     bus = open_bus(a, say)
     sess = Session(bus, lambda m: logf.write(m + '\n'), budget_s=300)
     try:
@@ -829,11 +986,17 @@ def check(a, say):
         for lo, hi, field, _crit in [(f[0], f[1], f[2], f[3]) for f in FIELDS]:
             say(f'  bytes {lo:3d}-{hi - 1:3d} {field:26s} {hdr[lo:hi][:24].hex()}{"..." if hi - lo > 24 else ""}')
         frames = int.from_bytes(hdr[26:30], 'little')
-        say(f'  -> {frames} frames, rate {int.from_bytes(hdr[138:140], "little")} Hz, root {hdr[2]}')
-        if a.wav:
+        hdr_rate = int.from_bytes(hdr[138:140], 'little')
+        say(f'  -> {frames} frames, rate {hdr_rate} Hz, root {hdr[2]}')
+        partner = int.from_bytes(hdr[136:138], 'little')
+        say('  -> stereo partner: none' if partner == 0xFFFF else
+            f'  -> stereo partner field 0x{partner:04x} (linked; see --pairs for what it points to)')
+        if want is not None:
+            if want_rate != hdr_rate:
+                say(f'  note: the file is at {want_rate} Hz but the sample is at {hdr_rate} Hz')
             if converted:
-                say('  note: the file needed conversion; compare against the "-sent.wav" saved by the send instead '
-                    'if it was sent with an earlier version (older versions used random dither)')
+                say('  note: the file needed conversion; compare against the exact audio saved in s2k-sent/ by the '
+                    'send instead (conversion can differ from what was sent, e.g. in older versions with dither)')
             if len(want) != frames * 2:
                 say(f'  audio NOT compared: file has {len(want) // 2} frames, the sample has {frames}')
             else:
@@ -851,19 +1014,32 @@ def check(a, say):
             restart_piscsi(say)
 
 
-def physical(a, names, pcms, say):
+def speed_report(sess, t_start, items):
+    st = sess.stats
+    total = sum(len(i.pcm) for i in items)
+    elapsed = time.monotonic() - t_start
+    parts = [f'{len(items)} sample(s), {total / 1000:.0f} KB of audio in {elapsed:.1f} s overall '
+             f'({total / max(elapsed, 1e-9) / 1000:.0f} KB/s including every check), {sess.commands} commands']
+    if st['w_s'] > 0:
+        parts.append(f'audio writes {st["w_bytes"] / st["w_s"] / 1000:.0f} KB/s (block {sess.block})')
+    if st['r_s'] > 0:
+        parts.append(f'verify reads {st["r_bytes"] / st["r_s"] / 1000:.0f} KB/s')
+    return '; '.join(parts)
+
+
+def physical(a, items, say):
     logname = a.log or datetime.datetime.now().strftime('s2ksend-%Y%m%d-%H%M%S.log')
     logf = open(logname, 'w', buffering=1)
-    for name, pcm in zip(names, pcms):
-        sent_wav = f'{name.strip().replace(" ", "_")}-sent.wav'
-        with wave.open(sent_wav, 'wb') as w:             # exactly the audio that will be sent, for later --check
+    os.makedirs(a.sent_dir, exist_ok=True)
+    for it in items:                                     # exactly the audio that will be sent, for later --check
+        with wave.open(os.path.join(a.sent_dir, safe_stem(it.name) + '.wav'), 'wb') as w:
             w.setnchannels(1)
             w.setsampwidth(2)
-            w.setframerate(RATE)
-            w.writeframes(pcm)
-        say(f'(exact audio saved as {sent_wav}; use it with --check later)')
-    total = sum(len(p) for p in pcms)
-    say(f'About to SEND {len(pcms)} sample(s), {total} bytes in all, to the S2000 at SCSI ID {a.target} '
+            w.setframerate(it.rate)
+            w.writeframes(it.pcm)
+    say(f'(exact audio saved in {a.sent_dir}/ as NAME.wav; use it with --check later)')
+    total = sum(len(i.pcm) for i in items)
+    say(f'About to SEND {len(items)} sample(s), {total} bytes in all, to the S2000 at SCSI ID {a.target} '
         f'(the Pi will be ID {a.initiator}).')
     say('Make sure the Mac is off or disconnected, and that nothing on the S2000 needs saving: it will')
     say('gain sample(s) in RAM. Do not touch the S2000 until this finishes.')
@@ -877,34 +1053,46 @@ def physical(a, names, pcms, say):
             return 1
     bus = open_bus(a, say)
     sess = Session(bus, lambda m: logf.write(m + '\n'), budget_s=max(600.0, 120 + total / 50000))
+    sess.block = a.block
+    sess.dump_dir = a.sent_dir
     ok = False
     quiet = False                    # True when a read-back check failed but the bus is idle and healthy
     done = []
-    def partial():
+
+    def partial(failed=None):
         if done:
             say('Already in the S2000 RAM from this run: ' + ', '.join(f'{n!r} (slot {i})' for n, i in done))
+        left = [i.name for i in items if i.name not in {n for n, _ in done}]
+        if left:
+            say('Not completed: ' + ', '.join(left) + (f'  (the one being sent when it stopped, {failed!r}, '
+                                                    'may be partly there)' if failed else ''))
+
+    t_start = time.monotonic()
+    current = None
     try:
         say(bus.banner)
-        sess.preflight(names, [len(p) // 2 for p in pcms])
-        for name, pcm in zip(names, pcms):
-            say(f'--- {name!r}')
-            idx = sess.send_sample(name, a.root, pcm, not a.no_verify_pcm, progress=say)
-            done.append((name, idx))
-            say(f'DONE: {name!r} is in sample slot {idx}.')
-        say(f'All done: {len(done)} sample(s), {sess.commands} commands. Transcript: {logname}')
+        sess.preflight([i.name for i in items], [len(i.pcm) // 2 for i in items])
+        for n, it in enumerate(items, 1):
+            current = it.name
+            say(f'--- [{n}/{len(items)}] {it.name!r} ({it.rate} Hz)')
+            idx = sess.send_sample(it.name, a.root, it.pcm, not a.no_verify_pcm, progress=say, rate=it.rate)
+            done.append((it.name, idx))
+            say(f'DONE: {it.name!r} is in sample slot {idx}.')
+        say('All done. ' + speed_report(sess, t_start, items))
+        say('Slots: ' + ', '.join(f'{n}={i}' for n, i in done) + f'.  Transcript: {logname}')
         ok = True
         return 0
     except VerifyError as e:
         quiet = True
         say(f'VERIFY FAILED: {e}')
         say('The transfer itself completed and the S2000 is back in normal mode.')
-        partial()
-        say(f'Inspect read-only with:  sudo ./s2ksend.py --check <slot> NAME-sent.wav --manage-piscsi')
+        partial(current)
+        say('Inspect read-only with:  sudo ./s2ksend.py --check <slot> ' + a.sent_dir + '/NAME.wav --manage-piscsi')
         say(f'Transcript: {logname}')
         return 1
     except SendError as e:
         say(f'STOP: {e}')
-        partial()
+        partial(current)
         if sess.mutated:
             say('Something may have been written and the S2000 may still be in SCSI-MIDI mode.')
             say('Switch SCSI-MIDI off on it if it is silent, then power-cycle the S2000 and the Pi.')
