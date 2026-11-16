@@ -1,0 +1,25 @@
+scsiexec includes material derived from SCSI2Pi.
+
+  SCSI2Pi, SCSI device emulator and SCSI tools for the Raspberry Pi
+  https://github.com/uweseimet/scsi2pi
+  Copyright (C) 2023-2026 Uwe Seimet
+  Copyright (C) PiSCSI project contributors
+  Copyright (C) 2020-2021 akuker
+  Copyright (C) 2014-2020 GIMONS
+  Copyright (C) 2001-2006 ＰＩ．(ytanaka@ipc-tokai.or.jp)
+  BSD 3-Clause License
+
+Specifically:
+
+  src/meta.cpp    the opcode metadata table, from cpp/shared/command_meta_data.cpp
+  src/sense.cpp   the SENSE_KEYS and ASC tables and the FormatSenseData layout,
+                  from cpp/shared/s2p_util.{h,cpp}
+  src/format.cpp  the hex dump layout, from cpp/shared/s2p_formatter.cpp
+  src/gpio_bus.*  the pin map, phase decode and REQ/ACK handshakes, from
+                  cpp/buses/board.h and cpp/buses/bus.{h,cpp}
+  src/gpio_initiator.*
+                  the initiator state machine and SCSI bus timings, from
+                  cpp/initiator/initiator_executor.{h,cpp}
+  src/gpio_bus_rpi.cpp
+                  the BCM GPIO register access and board detection, from
+                  cpp/pi/rpi_bus.{h,cpp}
