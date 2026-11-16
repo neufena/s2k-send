@@ -9,7 +9,7 @@ channel MESA / ReCycle use. Sequence and encodings come from a hardware-proven i
 * **Hardware-verified (v0.4, 16 Nov 2026):** a 0.4 s mono sample was sent to an S2000 and read back byte-for-byte identical.
   Earlier notes: not run on real hardware by me; verified: byte-exact encodings (parity test), the full
   transfer sequence against a strict simulated S2000 (`--selftest`), and that `s2kexec` builds.
-* Only 16-bit mono 44.1 kHz (the proven profile). Other WAVs are converted with sox.
+* 16-bit samples at 44.1 kHz or 22.05 kHz (the two rates the S2000 supports). Other formats are converted with sox (dither off).
 * Fewer safety gates than the original project (no replay gate, no hash pinning, no independent oracle).
   The rehearsal + read-back verification are the substitutes.
 
@@ -35,15 +35,30 @@ Flow: rehearsal -> you type SEND -> stop PiSCSI -> inventory -> create sample in
 audio in 16 KB blocks -> finalise -> re-read inventory, header and (default) all the audio and compare
 -> restart PiSCSI. A transcript `s2ksend-*.log` is written.
 
+## Batches, rates and speed (v0.6)
+    sudo ./s2ksend.py kick.wav snare.wav hats.wav loop.wav --manage-piscsi
+* Several files in one run: everything is loaded, named and rehearsed first, memory and names are checked once for
+  the whole batch, then the samples are sent one after another. Names come from the file names (12 characters;
+  duplicates get a number, e.g. KICK, KICK2). `--name` is for a single file only.
+* Rates: `--rate auto` (default) sends sources at or below 22.05 kHz as 22.05 kHz and anything above as 44.1 kHz;
+  `--rate 44100` / `--rate 22050` force one (sox resamples, no dither). The header gets bandwidth byte 0 (10 kHz)
+  for 22.05 kHz and 1 (20 kHz) for 44.1 kHz, plus the rate in Hz, per Ohsaki's S3000 format notes.
+  **22.05 kHz has not yet been tried on hardware.**
+* Speed: every run ends with a report (audio write KB/s, verify-read KB/s, overall KB/s, command count).
+  Experiments: `--block 32768` (MESA's block size; default 16384 is the size proven here), `--no-verify-pcm`
+  (skips the read-back, which takes about as long again as the send). The inventory read after each sample is
+  reused as the next sample's starting point, saving a round of commands per sample.
+* The exact audio sent is saved in `s2k-sent/NAME.wav` (use it with `--check`).
+
 ## Stereo (v0.5)
-A stereo WAV is sent as TWO separate mono samples, `NAME-L` and `NAME-R` (name limited to 10 characters), the
-way the S2000 itself stores stereo recordings. They are NOT linked as a pair (the stereo-partner header field is
+A stereo WAV is sent as TWO separate mono samples named the way the S2000 names its own pairs: the name (max 10
+characters) padded to 10, then `-L` / `-R` as the last two of the 12 characters (e.g. `LOOP      -L`). They are NOT linked as a pair (the stereo-partner header field is
 left as for a mono sample); assign them to left/right zones on the S2000. `--mono-mix` sends one mono sample
 instead. Both samples are checked for name clashes and total memory before anything is written. If the second
-fails, the first is reported as already in RAM. Each half is saved as NAME-L-sent.wav / NAME-R-sent.wav.
+fails, the first is reported as already in RAM. Each half is saved in s2k-sent/ as NAME-L.wav / NAME-R.wav.
 
     sudo ./s2ksend.py loop.wav --name LOOP --manage-piscsi
-    sudo ./s2ksend.py --check 6 LOOP-L-sent.wav --manage-piscsi      # read-only re-check of a slot
+    sudo ./s2ksend.py --check 6 s2k-sent/LOOP-L.wav --manage-piscsi      # read-only re-check of a slot
 
 ## If something goes wrong
 After an error that may have written, PiSCSI is deliberately left stopped. If the S2000 is silent, switch
@@ -80,3 +95,13 @@ gpio-source/ (BSD-3 initiator code from the supplied release, licence kept) | te
   The earlier audio mismatch was sox dither in the comparison, not a transfer fault.
 * 16 Nov 2026, v0.5: loop.wav (stereo, 3.69 s, 162831 frames) sent as LOOP-L / LOOP-R (slots 6 and 7), each
   verified byte-for-byte, 183 commands, 651 KB in all. Header notes identical to the mono case.
+* v0.6 (batches, 22.05 kHz, --block, speed report) is simulator-tested only so far (tests/: parity, verify, physical flow
+  through a fake helper at both rates and both block sizes, batch/rate/name planning).
+
+## Stereo pair research (16 Nov 2026, S2000 with a pair loaded from disk)
+* A mono sample reads back partner field 0xffff (= none). A real pair read: 'LP-1 102  -L' (slot 0) = 0x603c and
+  'LP-1 102  -R' (slot 1) = 0x6030: each points at the other. The difference, 12, equals the roster's 12 bytes per name,
+  so the field is very likely the internal address of the partner's entry: 0x6030 + 12 x slot (for that machine state).
+* `--pairs` (read-only) finds -L/-R pairs on the S2000, shows their fields, and checks whether they fit one rule.
+  Linking new pairs by writing this field is NOT implemented: it is an internal address, the S2000 rewrote a 0000 we
+  sent into ffff on a mono sample (so it may or may not accept a supplied value), and a wrong address could upset the sampler.
