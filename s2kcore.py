@@ -168,13 +168,14 @@ def parse_stat(f):
     v = lambda at, n: sum(f[at + j] << (7 * j) for j in range(n))
     if v(9, 2) > v(7, 2) or v(15, 4) > v(11, 4):
         raise SendError('inconsistent capacity in STAT reply')
-    return v(9, 2), v(15, 4)         # free headers, free sample words
+    return v(9, 2), v(15, 4), v(7, 2), v(11, 4)      # free headers, free words, total headers, total words
 
 
 class Inventory:
-    def __init__(self, programs, samples, free_headers, free_words):
+    def __init__(self, programs, samples, free_headers, free_words, total_headers=None, total_words=None):
         self.programs, self.samples = programs, samples
         self.free_headers, self.free_words = free_headers, free_words
+        self.total_headers, self.total_words = total_headers, total_words
 
 
 # --------------------------------------------------------------------------- header comparison
@@ -366,8 +367,8 @@ class Session:
     def inventory(self):
         programs = parse_roster(self.control(LIST_PROGRAMS, 'data'), False)
         samples = parse_roster(self.control(LIST_SAMPLES, 'data'), True)
-        fh, fw = parse_stat(self.control(STAT, 'data'))
-        return Inventory(programs, samples, fh, fw)
+        fh, fw, th, tw = parse_stat(self.control(STAT, 'data'))
+        return Inventory(programs, samples, fh, fw, th, tw)
 
     def read_header(self, index):
         raw = b''
@@ -572,6 +573,11 @@ class MockS2000:
             rate = int.from_bytes(header[138:140], 'little')
             if rate not in RATES or header[1] != (1 if rate == 44100 else 0):
                 raise SendError('mock: rate / bandwidth fields inconsistent')
+            h = bytearray(header)                          # what the real S2000 was seen to do (16 Nov 2026):
+            if h[136:138] == b'\x00\x00':                  # it stores 'no stereo partner' as ffff
+                h[136:138] = b'\xff\xff'
+            h[22:26] = (0x10000 + 0x4000 * len(self.samples)).to_bytes(4, 'little')    # internal start address
+            header = bytes(h)
             self.pending, self.pcm_in = header, bytearray()
             self.out += bytes([0xF0, 0x7E, ADDR, 0x7C, 0, 0xF7])         # WAIT first, then ACK
             self.followup = bytes([0xF0, 0x7E, ADDR, 0x7F, 0, 0xF7])
@@ -745,7 +751,7 @@ def load_audio(path, mono_mix=False, rate='auto'):
     return [_le_bytes(c) for c in chans], converted, target
 
 
-Item = collections.namedtuple('Item', 'name pcm rate source converted')
+Item = collections.namedtuple('Item', 'name pcm rate source converted root', defaults=(None,))   # root None = batch default
 
 
 def sample_names(base, channels, used=()):
@@ -778,7 +784,10 @@ def plan_items(paths, mono_mix=False, rate='auto', name=None):
 
 # --------------------------------------------------------------------------- piscsi management
 def systemctl(*a):
-    return subprocess.run(['systemctl', *a], capture_output=True, text=True).stdout.strip()
+    try:
+        return subprocess.run(['systemctl', *a], capture_output=True, text=True).stdout.strip()
+    except FileNotFoundError:                 # not a systemd machine (development laptop)
+        return ''
 
 
 def piscsi_active():
@@ -806,7 +815,8 @@ def op_inventory(sess):
     inv = sess.inventory()
     return {'samples': [{'slot': i, 'name': decode_name(n)} for i, n in enumerate(inv.samples)],
             'programs': [decode_name(n) for n in inv.programs],
-            'free_headers': inv.free_headers, 'free_words': inv.free_words}
+            'free_headers': inv.free_headers, 'free_words': inv.free_words,
+            'total_headers': inv.total_headers, 'total_words': inv.total_words}
 
 
 def op_sample(sess, slot):
@@ -823,6 +833,25 @@ def op_audio(sess, slot):
         raise SendError(f'slot {slot} does not hold a plain 16-bit {"/".join(str(r) for r in RATES)} Hz sample')
     pcm = sess.read_pcm(slot, info['frames'] * 2, 'download', info['name'])
     return info, pcm
+
+
+def pair_layout(linked):
+    """linked: [(slot_l, field_l, slot_r, field_r)]. If each field is the internal address of the partner's
+    12-byte entry, the left entry is at field_r and the right entry at field_l. Reports the spacing inside each
+    pair and the extra entries ('holes') between consecutive pairs that a plain 12 x slot rule would not predict."""
+    rows = sorted((sl, fr, sr, fl) for sl, fl, sr, fr in linked)          # (slot_l, addr_l, slot_r, addr_r)
+    spacing = {ar - al for _, al, _, ar in rows}
+    holes, prev = [], None
+    for sl, al, sr, ar in rows:
+        if prev is not None and (sl - prev[2]) == 1:                       # consecutive pairs only
+            extra = (al - prev[3]) // 12 - 1
+            if extra:
+                holes.append({'before_slot': sl, 'entries': extra})
+        prev = (sl, al, sr, ar)
+    return {'pairs': len(rows), 'spacing': spacing.pop() if len(spacing) == 1 else None,
+            'spacing_consistent': len(spacing) <= 1, 'holes': holes,
+            'extra_entries': sum(h['entries'] for h in holes),
+            'first_address': rows[0][1] if rows else None, 'last_address': rows[-1][3] if rows else None}
 
 
 def op_pairs(sess):
@@ -845,12 +874,13 @@ def op_pairs(sess):
                           'linked': is_linked})
             if is_linked:
                 linked.append((l, fl, r, fr))
-    rule = None
+    rule = layout = None
     if linked:
         stride, base, ok, notes = partner_map(linked)
         if stride is not None:
             rule = {'stride': stride, 'base': base, 'consistent': ok, 'notes': notes}
-    return {'samples': len(names), 'pairs': found, 'rule': rule}
+        layout = pair_layout(linked)
+    return {'samples': len(names), 'pairs': found, 'rule': rule, 'layout': layout}
 
 
 def op_probe(bus):
@@ -890,7 +920,8 @@ def op_send(sess, items, root, verify=True, progress=lambda m: None, done=None, 
     sess.preflight([i.name for i in items], [len(i.pcm) // 2 for i in items])
     for n, it in enumerate(items, 1):
         progress(f'--- [{n}/{len(items)}] {it.name!r} ({it.rate} Hz)')
-        idx = sess.send_sample(it.name, root, it.pcm, verify, progress=progress, rate=it.rate)
+        idx = sess.send_sample(it.name, root if it.root is None else it.root, it.pcm, verify,
+                               progress=progress, rate=it.rate)
         done.append({'name': it.name, 'slot': idx})
         progress(f'DONE: {it.name!r} is in sample slot {idx}.')
     st = sess.stats
@@ -1050,13 +1081,15 @@ class BusManager:
 
 def rehearse(items, root, verify, say, block=PCM_BLOCK):
     words = sum(len(i.pcm) // 2 for i in items)
-    m = MockS2000(samples=['EXISTING'], free_words=max(1_000_000, words + 1000))
+    taken = {i.name for i in items}
+    seed = next(n for n in ['EXISTING'] + [f'EXISTING{k}' for k in range(2, 1000)] if n not in taken)
+    m = MockS2000(samples=[seed], free_words=max(1_000_000, words + 1000))
     sess = Session(MockBus(m), lambda x: None, budget_s=600)
     sess.block = block
     sess.dump_dir = tempfile.gettempdir()
     sess.preflight([i.name for i in items], [len(i.pcm) // 2 for i in items])
     for it in items:
-        idx = sess.send_sample(it.name, root, it.pcm, verify, rate=it.rate)
+        idx = sess.send_sample(it.name, root if it.root is None else it.root, it.pcm, verify, rate=it.rate)
         if m.samples[idx]['pcm'] != it.pcm or idx != len(m.samples) - 1:
             raise SendError('rehearsal: audio mismatch')
     say(f'rehearsal OK ({sess.commands} commands against the simulated S2000)')

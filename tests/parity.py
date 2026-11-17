@@ -3,7 +3,7 @@
 Usage:  ./parity <reference-output-file>   i.e.   parity.py /tmp/parity.out"""
 import os, sys
 sys.path.insert(0, os.path.join(os.path.dirname(os.path.abspath(__file__)), '..'))
-import s2ksend as s
+import s2kcore as s
 
 ref = dict(l.split(' ', 1) for l in open(sys.argv[1]).read().splitlines() if ' ' in l)
 h = s.sample_header('TEST TONE-1', 60, 30000)

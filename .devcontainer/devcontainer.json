@@ -1,0 +1,11 @@
+{
+  "name": "s2k-send",
+  "image": "mcr.microsoft.com/devcontainers/base:trixie",
+  "onCreateCommand": "sudo apt-get update && sudo apt-get install -y --no-install-recommends python3 g++ make sox && sudo rm -rf /var/lib/apt/lists/*",
+  "forwardPorts": [8420],
+  "customizations": {
+    "vscode": {
+      "extensions": ["ms-python.python", "ms-vscode.cpptools"]
+    }
+  }
+}

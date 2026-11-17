@@ -3,7 +3,7 @@
 Env FAIL_AFTER=N makes it report a bus error on command N+1 (to test failure handling)."""
 import os, sys
 sys.path.insert(0, os.path.join(os.path.dirname(os.path.abspath(__file__)), '..'))
-import s2ksend as s
+import s2kcore as s
 
 mock = s.MockS2000(samples=['EXISTING'], free_words=1_900_000)
 fail_after = int(os.environ.get('FAIL_AFTER', '-1'))

@@ -2,7 +2,7 @@
 """Sample rates, auto rate choice, name planning and batch loading (needs sox for the conversion cases)."""
 import os, sys, math, struct, wave, shutil, tempfile
 sys.path.insert(0, os.path.join(os.path.dirname(os.path.abspath(__file__)), '..'))
-import s2ksend as s
+import s2kcore as s
 
 # header: 22.05 kHz => bandwidth 0, rate 22050; 44.1 kHz => bandwidth 1, rate 44100
 h44, h22 = s.sample_header('A', 60, 100, 44100), s.sample_header('A', 60, 100, 22050)
@@ -24,7 +24,7 @@ for stem, ch in [('kick', 1), ('kick', 1), ('Loop', 2), ('loop', 2), ('a_very_lo
     assert not (set(names) & used) and all(len(n) <= 12 for n in names), names
     used |= set(names)
 assert len(used) == 2 + 4 + 2, used          # all unique: KICK KICK2, LOOP-L/R LOOP2-L/R, two long names
-assert 'KICK2' in used and 'LOOP2-L' in used
+assert 'KICK2' in used and 'LOOP2     -L' in used
 
 tmp = tempfile.mkdtemp()
 def mk(name, ch, sw, fr, secs):
@@ -41,7 +41,7 @@ def mk(name, ch, sw, fr, secs):
 k = mk('kick.wav', 1, 2, 44100, 0.5)
 l = mk('loop.wav', 2, 2, 22050, 1.0)
 items = s.plan_items([k, l])
-assert [(i.name, i.rate, i.converted) for i in items] == [('KICK', 44100, False), ('LOOP-L', 22050, False), ('LOOP-R', 22050, False)]
+assert [(i.name, i.rate, i.converted) for i in items] == [('KICK', 44100, False), ('LOOP      -L', 22050, False), ('LOOP      -R', 22050, False)]
 assert len(items[0].pcm) == 44100 and len(items[1].pcm) == len(items[2].pcm) == 44100
 assert items[1].pcm != items[2].pcm            # left and right really are different channels
 # forcing a rate resamples (needs sox)
@@ -62,4 +62,8 @@ except s.SendError: pass
 # whole batch rehearsal at both rates, both block sizes
 for blk in (8192, 16384, 32768):
     s.rehearse(items, 60, True, lambda m: None, blk)
+# stereo names follow the S2000's own convention: -L / -R are the LAST two of the 12 characters
+assert s.sample_names('Loop', 2) == ['LOOP      -L', 'LOOP      -R']
+assert all(len(n) == 12 for n in s.sample_names('A very long stereo name', 2))
+assert s.safe_stem('LOOP      -L') == 'LOOP_-L'
 print('test_batch_rates OK')
