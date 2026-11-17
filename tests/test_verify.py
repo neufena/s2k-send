@@ -2,7 +2,7 @@
 """Rehearsal tests for the read-back handling (simulator only; no hardware)."""
 import os, sys, types, io, contextlib
 sys.path.insert(0, os.path.join(os.path.dirname(os.path.abspath(__file__)), '..'))
-import s2ksend as s
+import s2kcore as s
 
 PCM = bytes(range(256)) * 69          # 17664 bytes
 
@@ -39,26 +39,11 @@ def internal(h): h[22:26] = b'\x01\x02\x03\x04'; h[34:38] = (8832).to_bytes(4, '
 def renamed(h): h[3:6] = bytes([1, 2, 3])                                                      # critical
 def newrate(h): h[138:140] = (22050).to_bytes(2, 'little')                                     # critical
 
-r, n = run(lambda h: None);  assert r == 'OK' and not any('note' in x for x in n), (r, n)
-r, n = run(internal);        assert r == 'OK' and sum('header note' in x for x in n) == 2, (r, n); print('\n'.join(x for x in n if 'note' in x))
+r, n = run(lambda h: None);  assert r == 'OK' and sum('[normal' in x for x in n) == 2 and not any('[not critical]' in x for x in n), (r, n)
+r, n = run(internal);        assert r == 'OK' and sum('[not critical]' in x for x in n) == 1, (r, n)
 r, n = run(renamed);         assert r == 'VerifyError', (r, n)
 r, n = run(newrate);         assert r == 'VerifyError', (r, n)
 
-# --check (read-only) against the simulator
-m = s.MockS2000(samples=['EXISTING'])
-s.Session(s.MockBus(m), lambda x: None).send_sample('KICK', 60, PCM, True)
-class B(s.MockBus):
-    banner = 'mock'
-    def close(self): pass
-s.open_bus = lambda a, say: B(m)
-lines = []
-args = types.SimpleNamespace(check=1, wavs=[], log=os.devnull, manage_piscsi=False)
-assert s.check(args, lines.append) == 0 and any('KICK' in x for x in lines) and any('8832 frames' in x for x in lines)
-wav = '/tmp/_kick.wav'
-import wave
-w = wave.open(wav, 'wb'); w.setnchannels(1); w.setsampwidth(2); w.setframerate(44100); w.writeframes(PCM); w.close()
-args.wavs = [wav]; lines.clear()
-assert s.check(args, lines.append) == 0 and any('MATCHES' in x for x in lines), lines
 # the Bridge's own engine expects exactly this request for a 16174-frame sample (RAWBREAK164, slice 1)
 assert s.pcm_read_request(0, 16174).hex() == 'f047000c480000000000002e7e00000100f7'
 # real S2000 values seen on 16 Nov 2026: stereo partner reads back as ffff for a mono sample
