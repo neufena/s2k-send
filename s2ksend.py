@@ -43,6 +43,7 @@ def build_parser():
     ap.add_argument('--status', action='store_true', help='show the server and bus state')
     ap.add_argument('--list', action='store_true', help='READ-ONLY: list the samples on the S2000 and free memory')
     ap.add_argument('--probe', action='store_true', help='READ-ONLY: INQUIRY the S2000 on the bus')
+    ap.add_argument('--piscsi', action='store_true', help='READ-ONLY: PiSCSI state, its attached devices, and the setup the server has saved')
     ap.add_argument('--pairs', action='store_true', help='READ-ONLY: find -L/-R pairs and decode their partner fields')
     ap.add_argument('--check', type=int, metavar='SLOT',
                     help='READ-ONLY: show the header of the sample in SLOT; with a WAV, also compare the audio')
@@ -64,8 +65,30 @@ def show_status(c):
     b = st['bus']
     say(f'server {st["version"]} (API {st["api"]}) at {c.base}' + ('  [SIMULATED S2000]' if b['mock'] else ''))
     say(f'bus: {b["state"]}; PiSCSI: {b["piscsi"]}; S2000 SCSI ID {b["target"]}, server is ID {b["initiator"]}')
+    snap = b.get('piscsi_snapshot')
+    if snap and snap['pending']:
+        say(f'PiSCSI setup saved ({snap["devices"]} device(s)); it will be put back when PiSCSI restarts')
+    lr = b.get('last_restore')
+    if lr:
+        say(f'last PiSCSI restore: {lr["note"]}' + (f' ({len(lr["failed"])} command(s) failed)' if lr['failed'] else ''))
     say(f'jobs: current {st["jobs"]["current"] or "none"}, queued {st["jobs"]["queued"]}')
     return st
+
+
+def show_piscsi(c):
+    r = c.piscsi()
+    say(f'PiSCSI service: {r["state"]}; restore mode: {r["restore_mode"]}')
+    fmt = lambda d: f'  ID {d["id"]}:{d["lun"]} {d["type"]} {d["file"] or "(no media)"}' + ('  [write protected]' if d['protected'] else '')
+    if r['devices'] is not None:
+        say(f'attached now ({len(r["devices"])}):')
+        for d in r['devices']:
+            say(fmt(d))
+    if r['snapshot']:
+        say(f'saved setup ({r["snapshot"]["devices"]} device(s), {"waiting to be restored" if r["snapshot"]["pending"] else "already restored"}):')
+        for d in r['snapshot_devices']:
+            say(fmt(d))
+    elif r['devices'] is None:
+        say('(nothing to show: PiSCSI is not managed here, or is stopped with no saved setup)')
 
 
 def show_list(c):
@@ -205,6 +228,8 @@ def main(argv=None):
             show_status(c)
         elif a.list:
             show_list(c)
+        elif a.piscsi:
+            show_piscsi(c)
         elif a.probe:
             r = c.probe()
             say(f'INQUIRY status {r["status"]}, {r["bytes"]} bytes: vendor {r["vendor"]!r} product {r["product"]!r}')

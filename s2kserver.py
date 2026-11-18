@@ -17,6 +17,7 @@ The API is documented in API.md. In short:
     POST /v1/jobs/<id>/start                 run it (after the server's own rehearsal passed)
     GET  /v1/jobs/<id>?since=N               state, progress, new log lines, result / error
     GET  /v1/jobs/<id>/events                the same as a Server-Sent Events stream
+    GET  /v1/piscsi                          PiSCSI service state, attached devices, saved setup
     POST /v1/recover                         after a failed send and a power-cycle
 """
 import argparse
@@ -354,6 +355,15 @@ def probe(h, query):
         h._json(200, core.op_probe(sess.bus))
 
 
+@route('GET', r'/v1/piscsi')
+def piscsi_info(h, query):
+    """What the server would save before stopping PiSCSI (read-only; does not use the bus)."""
+    pm = h.bus.pm
+    live = pm.list_devices() if (h.bus.mock is None and h.bus.manage_piscsi) else None
+    h._json(200, {'state': h.bus.piscsi_state(), 'restore_mode': pm.mode, 'devices': live,
+                  'snapshot': pm.info(), 'snapshot_devices': pm.snap['devices'] if pm.snap else None})
+
+
 @route('POST', r'/v1/recover')
 def recover(h, query):
     h.bus.recover()
@@ -496,7 +506,11 @@ def main(argv=None):
                     help='do not stop/restart the piscsi service (then it must already be stopped)')
     ap.add_argument('--keep-bus', type=float, default=20.0,
                     help='seconds to keep PiSCSI stopped after an operation (default 20; 0 = restart at once)')
-    ap.add_argument('--data-dir', default='s2k-data', help='where job transcripts and the exact audio sent are kept')
+    ap.add_argument('--restore-piscsi', choices=['exact', 'attach-only', 'off'], default='exact',
+                    help="after restarting PiSCSI put its device setup back as it was: 'exact' (attach what is missing, "
+                         "detach what was not there before), 'attach-only', or 'off' (just restart, as before)")
+    ap.add_argument('--data-dir', default='s2k-data', help='where job transcripts, the exact audio sent and the '
+                                                           'PiSCSI setup snapshot are kept')
     ap.add_argument('--mock', action='store_true', help='simulated S2000, no hardware (for developing clients)')
     ap.add_argument('--mock-samples', default='', help='comma-separated names already in the simulated S2000')
     a = ap.parse_args(argv)
@@ -506,7 +520,8 @@ def main(argv=None):
         names = [n for n in a.mock_samples.split(',') if n]
         mock = core.MockS2000(samples=names, free_words=16_000_000)
     bus = core.BusManager(a.target, a.initiator, a.helper, not a.no_manage_piscsi, a.keep_bus, mock,
-                          require_root=True, log=log)
+                          require_root=True, log=log, restore_mode=a.restore_piscsi,
+                          state_file=os.path.join(a.data_dir, 'piscsi-snapshot.json'))
     srv = make_server(a.host, a.port, bus, a.data_dir)
     signal.signal(signal.SIGTERM, lambda *_: threading.Thread(target=srv.shutdown, daemon=True).start())
     print(f's2kserver {core.__version__} listening on {a.host}:{a.port}'
