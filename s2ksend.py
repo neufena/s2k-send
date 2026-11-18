@@ -56,7 +56,7 @@ def build_parser():
 def describe(items):
     core.describe(items, say)
     if any(items[i].source == items[i + 1].source for i in range(len(items) - 1)):
-        say('(stereo files become two separate mono samples, NOT linked as a pair)')
+        say('(stereo files become a -L/-R pair named like the S2000\'s own; the S2000 links the two halves itself when both are in)')
 
 
 # ------------------------------------------------------------------ read-only commands
@@ -189,8 +189,8 @@ def send(c, a):
             c.cancel(snap['id'])
             say('Cancelled; nothing sent.')
             return 1
-    c.start(snap['id'])
-    final = c.wait(snap['id'], on_log=say)
+    started = c.start(snap['id'])
+    final = c.wait(snap['id'], on_log=say, since=started['next'])         # (the rehearsal line was already shown)
     if final['state'] == 'done':
         r = final['result']
         say(f'All done. {len(r["samples"])} sample(s), {r["audio_bytes"] / 1000:.0f} KB of audio in {r["elapsed_s"]} s '
@@ -199,8 +199,9 @@ def send(c, a):
             + (f'; verify reads {r["verify_kbps"]} KB/s' if r['verify_kbps'] else ''))
         say('Slots: ' + ', '.join(f'{s["name"].strip()}={s["slot"]}' for s in r['samples']))
         return 0
-    err = final['error'] or {}
-    say(f'{err.get("code", final["state"]).upper()}: {err.get("message", "")}')
+    err = final['error'] or {}                                  # the server already streamed 'FAILED (code): message'
+    if not err:
+        say(f'job {final["state"]}')
     if err.get('done'):
         say('Already in the S2000 RAM from this run: ' + ', '.join(f'{d["name"]!r} (slot {d["slot"]})' for d in err['done']))
     if err.get('not_completed'):
