@@ -13,6 +13,7 @@ import array
 import collections
 import contextlib
 import io
+import json
 import os
 import re
 import select
@@ -783,23 +784,198 @@ def plan_items(paths, mono_mix=False, rate='auto', name=None):
 
 
 # --------------------------------------------------------------------------- piscsi management
-def systemctl(*a):
+def _run_cmd(cmd, timeout=30):
+    """Run a command; returns (returncode, stdout+stderr). (127, '') if the program does not exist."""
     try:
-        return subprocess.run(['systemctl', *a], capture_output=True, text=True).stdout.strip()
-    except FileNotFoundError:                 # not a systemd machine (development laptop)
-        return ''
+        r = subprocess.run(cmd, capture_output=True, text=True, timeout=timeout)
+        return r.returncode, (r.stdout or '') + (r.stderr or '')
+    except FileNotFoundError:
+        return 127, ''
+    except subprocess.TimeoutExpired:
+        return 124, 'timed out'
 
 
-def piscsi_active():
-    return systemctl('is-active', 'piscsi') == 'active'
+TYPE_CODES = ('SCHD', 'SCRM', 'SCMO', 'SCCD', 'SCBR', 'SCDP', 'SCHS', 'SCLP')
 
 
-def restart_piscsi(say):
-    subprocess.run(['systemctl', 'start', 'piscsi'])
-    time.sleep(3)
-    if systemctl('is-enabled', 'piscsi-web') in ('enabled', 'static'):
-        subprocess.run(['systemctl', 'restart', 'piscsi-web'])
-    say(f'PiSCSI is now: {systemctl("is-active", "piscsi")}')
+def parse_scsictl_list(text):
+    """Parse `scsictl -l`: rows like '| 0 | 0 | SCHD | /home/pi/images/disk.hda'. Only the first four columns are used
+    (ID, LUN, TYPE, image file / status); a missing image ('NO MEDIA') gives file None. Returns a list of dicts."""
+    devices = []
+    for line in text.splitlines():
+        s = line.strip()
+        if not s.startswith('|'):
+            continue
+        parts = [p.strip() for p in s.strip('|').split('|')]
+        if len(parts) < 3 or not parts[0].isdigit() or not parts[1].isdigit():
+            continue
+        rest = parts[3] if len(parts) > 3 else ''
+        flags = ' '.join(re.findall(r'[\(\[]([^\)\]]*)[\)\]]', rest))
+        file = re.sub(r'\s*[\(\[][^\)\]]*[\)\]]', '', rest).strip()
+        if file.upper() in ('', '-', 'NO MEDIA', 'NO IMAGE', 'EMPTY'):
+            file = None
+        devices.append({'id': int(parts[0]), 'lun': int(parts[1]), 'type': parts[2].upper(), 'file': file,
+                        'protected': 'PROTECT' in s.upper() or 'PROTECT' in flags.upper(), 'raw': s})
+    return devices
+
+
+class PiscsiManager:
+    """Stops and restarts the piscsi service while keeping the current device setup.
+
+    Before stopping, the attached devices are read with `scsictl -l` and saved (also to a file, so a server
+    restart while PiSCSI is stopped does not lose them). After starting again, PiSCSI's own default config may
+    re-attach some devices (the web UI loads it); the manager then attaches what is missing and, in mode 'exact',
+    detaches what was not there before, so the setup is the same as before the stop.
+    mode: 'exact' | 'attach-only' (never detach) | 'off' (just restart the services, as before).
+    Only the columns `scsictl -l` shows are restored (ID, LUN, type, image file, write-protect); vendor/product
+    names and non-default block sizes are not shown by it and cannot be restored.
+    """
+
+    def __init__(self, run=_run_cmd, log=lambda m: None, mode='exact', state_file=None, settle_s=12.0,
+                 sleep=time.sleep):
+        self.run, self.log, self.mode, self.state_file = run, log, mode, state_file
+        self.settle_s, self.sleep = settle_s, sleep
+        self.snap = None
+        if state_file and os.path.exists(state_file):
+            try:
+                with open(state_file) as f:
+                    snap = json.load(f)
+                if snap.get('pending'):
+                    self.snap = snap
+                    self.log(f'a PiSCSI snapshot from {time.ctime(snap["taken"])} is waiting to be restored')
+            except (OSError, ValueError):
+                pass
+
+    # -- service state
+    def state(self):
+        return self.run(['systemctl', 'is-active', 'piscsi'])[1].strip() or 'unknown'
+
+    def active(self):
+        return self.state() == 'active'
+
+    def list_devices(self):
+        rc, out = self.run(['scsictl', '-l'])
+        if rc != 0:
+            return None
+        return parse_scsictl_list(out)
+
+    # -- snapshot
+    def _save(self):
+        if self.state_file and self.snap is not None:
+            try:
+                os.makedirs(os.path.dirname(os.path.abspath(self.state_file)), exist_ok=True)
+                with open(self.state_file, 'w') as f:
+                    json.dump(self.snap, f, indent=1)
+            except OSError:
+                pass
+
+    def snapshot(self):
+        """Remember the current setup (only while PiSCSI is running). Keeps an earlier pending snapshot."""
+        if self.mode == 'off' or (self.snap and self.snap.get('pending')):
+            return
+        devices = self.list_devices()
+        if devices is None:
+            self.log('could not read the PiSCSI device list (scsictl -l): the setup will not be restored by this server')
+            self.snap = None
+            return
+        self.snap = {'taken': time.time(), 'pending': True, 'devices': devices}
+        self._save()
+        self.log(f'saved the PiSCSI setup: {len(devices)} device(s)'
+                 + ''.join(f'\n    ID {d["id"]}:{d["lun"]} {d["type"]} {d["file"] or "(no media)"}' for d in devices))
+
+    def info(self):
+        if not self.snap:
+            return None
+        return {'taken': self.snap['taken'], 'pending': self.snap.get('pending', False),
+                'devices': len(self.snap['devices'])}
+
+    # -- stop / restore
+    def stop(self):
+        rc, out = self.run(['systemctl', 'stop', 'piscsi'])
+        if rc != 0:
+            raise SendError(f'could not stop piscsi: {out.strip()[:120] or "systemctl failed"}')
+        for _ in range(10):
+            if not self.active():
+                return
+            self.sleep(1)
+        raise SendError('piscsi did not stop')
+
+    def _wait_stable(self):
+        """Poll the device list until it has stopped changing (the web UI loads its default config a moment after
+        starting). Returns the last list, or None if scsictl never answered."""
+        last, same, waited = None, 0, 0.0
+        while waited <= self.settle_s:
+            cur = self.list_devices()
+            key = None if cur is None else [(d['id'], d['lun'], d['type'], d['file']) for d in cur]
+            same = same + 1 if (cur is not None and key == last) else 0
+            if same >= 2:
+                return cur
+            last = key
+            self.sleep(1)
+            waited += 1
+        return self.list_devices()
+
+    @staticmethod
+    def _addr(d):
+        return str(d['id']) if d['lun'] == 0 else f'{d["id"]}:{d["lun"]}'
+
+    def restore(self):
+        """Start piscsi (and the web UI) and put the saved setup back. Returns a result dict; never raises."""
+        res = {'restored': False, 'attached': [], 'detached': [], 'failed': [], 'note': ''}
+        self.run(['systemctl', 'start', 'piscsi'])
+        self.sleep(3)
+        if self.run(['systemctl', 'is-enabled', 'piscsi-web'])[1].strip() in ('enabled', 'static'):
+            self.run(['systemctl', 'restart', 'piscsi-web'])
+        self.log(f'PiSCSI is now: {self.state()}')
+        if self.mode == 'off' or not self.snap or not self.snap.get('pending'):
+            res['note'] = 'no saved setup to restore'
+            return res
+        have = self._wait_stable()
+        if have is None:
+            res['note'] = 'scsictl does not answer: the setup could not be checked'
+            self.log('WARNING: ' + res['note'])
+            return res
+        want = {(d['id'], d['lun']): d for d in self.snap['devices']}
+        cur = {(d['id'], d['lun']): d for d in have}
+        key = lambda d: (d['type'], d['file'])
+        for k, d in sorted(want.items()):
+            if k in cur and key(cur[k]) == key(d):
+                continue
+            if k in cur:                                           # something else is attached there
+                self._do(['scsictl', '-i', self._addr(d), '-c', 'detach'], res, 'detached', d)
+            cmd = ['scsictl', '-i', self._addr(d), '-c', 'attach', '-t', d['type'].lower()] + (['-f', d['file']] if d['file'] else [])
+            self._do(cmd, res, 'attached', d)
+        for k, d in sorted(cur.items()):
+            if k not in want and self.mode == 'exact':
+                self._do(['scsictl', '-i', self._addr(d), '-c', 'detach'], res, 'detached', d)
+        for k, d in sorted(want.items()):                          # write protection last, once attached
+            if d['protected'] and not any(f['id'] == d['id'] and f['lun'] == d['lun'] and f['why'].startswith('attach') for f in res['failed']):
+                if not (k in cur and key(cur[k]) == key(d) and cur[k]['protected']):
+                    self._do(['scsictl', '-i', self._addr(d), '-c', 'protect'], res, None, d)
+        final = self.list_devices() or []
+        fin = {(d['id'], d['lun']): key(d) for d in final}
+        missing = [k for k, d in want.items() if fin.get(k) != key(d)]
+        extra = [k for k in fin if k not in want] if self.mode == 'exact' else []
+        res['restored'] = not missing and not extra and not res['failed']
+        res['note'] = ('the PiSCSI setup is back as it was' if res['restored'] else
+                       f'WARNING: setup not fully restored (missing {missing}, unexpected {extra}, failed {len(res["failed"])})')
+        self.log(res['note'])
+        self.snap['pending'] = False
+        self.snap['restored'] = time.time()
+        self._save()
+        return res
+
+    def _do(self, cmd, res, bucket, d):
+        verb = cmd[4]                                              # scsictl -i ADDR -c VERB ...
+        rc, out = self.run(cmd)
+        what = f'ID {d["id"]}:{d["lun"]} {d["type"]} {d["file"] or "(no media)"}'
+        if rc == 0:
+            if bucket:
+                res[bucket].append(what)
+            self.log(f'  {verb} {what}')
+        else:
+            res['failed'].append({'id': d['id'], 'lun': d['lun'], 'why': f'{verb}: {out.strip()[:120]}'})
+            self.log(f'  FAILED {" ".join(cmd)}: {out.strip()[:120]}')
 
 
 # --------------------------------------------------------------------------- operations (used by the server)
@@ -952,8 +1128,10 @@ class BusManager:
     """
 
     def __init__(self, target=6, initiator=7, helper=None, manage_piscsi=True, keep_bus=20.0, mock=None,
-                 require_root=True, timeout=1, log=lambda m: None):
+                 require_root=True, timeout=1, log=lambda m: None, restore_mode='exact', state_file=None, piscsi=None):
         self.target, self.initiator, self.mock = target, initiator, mock
+        self.pm = piscsi or PiscsiManager(log=log, mode=restore_mode, state_file=state_file)
+        self.last_restore = None
         self.helper = helper or os.path.join(os.path.dirname(os.path.abspath(__file__)), 's2kexec')
         self.manage_piscsi, self.keep_bus = manage_piscsi, keep_bus
         self.require_root, self.timeout, self.log = require_root, timeout, log
@@ -966,11 +1144,16 @@ class BusManager:
     def piscsi_state(self):
         if self.mock is not None or not self.manage_piscsi:
             return 'unmanaged'
-        return systemctl('is-active', 'piscsi') or 'unknown'
+        return self.pm.state()
 
     def status(self):
         return {'state': self.state, 'piscsi': self.piscsi_state(), 'target': self.target,
-                'initiator': self.initiator, 'mock': self.mock is not None, 'keep_bus_s': self.keep_bus}
+                'initiator': self.initiator, 'mock': self.mock is not None, 'keep_bus_s': self.keep_bus,
+                'piscsi_snapshot': self.pm.info(), 'last_restore': self.last_restore}
+
+    def _restore(self):
+        self.last_restore = self.pm.restore()
+        return self.last_restore
 
     # -- PiSCSI restart timer
     def _cancel_timer(self):
@@ -983,7 +1166,7 @@ class BusManager:
         if self.lock.acquire(blocking=False):
             try:
                 if self.state == 'idle':
-                    restart_piscsi(self.log)
+                    self._restore()
             finally:
                 self.lock.release()
 
@@ -996,7 +1179,7 @@ class BusManager:
                 self._timer.daemon = True
                 self._timer.start()
         else:
-            restart_piscsi(self.log)
+            self._restore()
 
     # -- opening the bus
     def _open(self):
@@ -1007,16 +1190,11 @@ class BusManager:
         if not os.path.exists(self.helper if not isinstance(self.helper, (list, tuple)) else self.helper[-1]):
             raise SendError(f'bus helper {self.helper} not found: run `make` first')
         if self.manage_piscsi:
-            if piscsi_active():
+            if self.pm.active():
+                self.pm.snapshot()                        # remember the attached devices first
                 self.log('stopping piscsi (emulated disks disappear until it is restarted)')
-                subprocess.run(['systemctl', 'stop', 'piscsi'], check=True)
-                for _ in range(10):
-                    if not piscsi_active():
-                        break
-                    time.sleep(1)
-                if piscsi_active():
-                    raise SendError('piscsi did not stop')
-        elif piscsi_active():
+                self.pm.stop()
+        elif self.pm.active():
             raise SendError('the piscsi service is running and owns the bus: stop it, or run the server with '
                             'PiSCSI management enabled')
         return HelperBus(self.helper, self.initiator, self.target, self.timeout)
@@ -1062,7 +1240,7 @@ class BusManager:
             raise Busy('another operation is using the bus')
         try:
             if self.mock is None and self.manage_piscsi:
-                restart_piscsi(self.log)
+                self._restore()
             self.state = 'idle'
         finally:
             self.lock.release()
@@ -1076,7 +1254,7 @@ class BusManager:
                 self._timer = None
                 pending = True
         if pending and self.state == 'idle':
-            restart_piscsi(self.log)
+            self._restore()
 
 
 def rehearse(items, root, verify, say, block=PCM_BLOCK):

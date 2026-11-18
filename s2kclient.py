@@ -63,6 +63,9 @@ class S2KClient:
     def probe(self):
         return self._json('POST', '/v1/probe')
 
+    def piscsi(self):
+        return self._json('GET', '/v1/piscsi')
+
     def recover(self):
         return self._json('POST', '/v1/recover')
 

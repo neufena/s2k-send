@@ -12,7 +12,7 @@ Default address `http://<pi>:8420`. All endpoints are under `/v1/`. CORS is open
 * **Names**: up to 12 characters from `0-9`, space, `A-Z`, `#`, `+`, `-`, `.`. The server rejects anything else.
 * **Slots** are 0-based positions in the S2000's sample list. New samples are appended.
 * **One bus, one operation at a time.** While an operation runs PiSCSI is stopped (the Pi's emulated disks
-  disappear) and restarted `--keep-bus` seconds after the last operation (default 20 s). Read endpoints answer
+  disappear) and restarted `--keep-bus` seconds after the last operation (default 20 s), with its attached devices put back as they were. Read endpoints answer
   `409 busy` if the bus is in use; send jobs wait their turn.
 * **`needs_attention`**: if a send fails after something was written, the server deliberately leaves PiSCSI stopped and
   refuses work (`409 needs_attention`) until the S2000 and the Pi have been power-cycled and `POST /v1/recover` is called.
@@ -22,7 +22,8 @@ Default address `http://<pi>:8420`. All endpoints are under `/v1/`. CORS is open
 ## Server and bus
 | Endpoint | Reply |
 |---|---|
-| `GET /v1/status` | `{server, version, api, bus: {state: idle\|busy\|needs_attention, piscsi, target, initiator, mock, keep_bus_s}, jobs: {current, queued}}` |
+| `GET /v1/status` | `{server, version, api, bus: {state: idle\|busy\|needs_attention, piscsi, target, initiator, mock, keep_bus_s, piscsi_snapshot, last_restore}, jobs: {current, queued}}` (`last_restore`: `{restored, attached, detached, failed, note}` from the most recent PiSCSI restart) |
+| `GET /v1/piscsi` | `{state, restore_mode, devices: [{id, lun, type, file, protected}] \| null, snapshot: {taken, pending, devices} \| null, snapshot_devices}`: the PiSCSI service state, its attached devices (read from `scsictl -l`; `null` when stopped or unmanaged) and the setup the server saved before stopping it |
 | `POST /v1/probe` | INQUIRY of the S2000: `{status, bytes, vendor, product}` |
 | `POST /v1/recover` | after a failed send **and a power-cycle**: restart PiSCSI, accept work again |
 

@@ -27,19 +27,21 @@ through its SCSI-MIDI tunnel (vendor commands 09/0C/0D/0E carrying Akai SysEx), 
 * PiSCSI board that supports initiator mode (FULLSPEC board, or direct wiring without transceivers). The S2000 Bridge project
   page says it was tested with a Raspberry Pi 3 and a RaSCSI v2.3B; other Pi models/boards are untested here.
 * S2000 = ID 6. The Pi becomes the initiator, default ID 7, so **power off/disconnect the Mac** (or use `--initiator N`).
-* While an operation runs, `piscsi` is stopped: the Pi's emulated disks vanish, then come back (`--keep-bus` seconds later).
+* While an operation runs, `piscsi` is stopped: the Pi's emulated disks vanish, then come back (`--keep-bus` seconds later) **with the
+  same setup as before** (see below).
 
 ## Install and run the server (on the Pi)
     sudo apt install g++ make sox python3
     make                                   # builds ./s2kexec, the bus helper
     sudo ./s2kserver.py                    # listens on :8420; add --keep-bus 0 to restart PiSCSI immediately
     ./s2kserver.py --mock                  # simulated S2000 for developing clients, no hardware, no root
-To start it at boot see `s2k-server.service`. Options: `--target 6 --initiator 7 --data-dir DIR --no-manage-piscsi --keep-bus SECS`.
+To start it at boot see `s2k-server.service`. Options: `--target 6 --initiator 7 --data-dir DIR --no-manage-piscsi --keep-bus SECS --restore-piscsi exact|attach-only|off`.
 
 ## Use the client (same Pi or another computer; needs only s2ksend.py, s2kcore.py, s2kclient.py)
     export S2K_SERVER=http://piscsi.local:8420            # or pass --server each time
     ./s2ksend.py --status                                 # server + bus state
     ./s2ksend.py --list                                   # samples on the S2000 and free memory (read-only)
+    ./s2ksend.py --piscsi                                 # PiSCSI state, attached devices, the saved setup (read-only)
     ./s2ksend.py kick.wav snare.wav hats.wav loop.wav     # send a batch (asks you to type SEND)
     ./s2ksend.py loop.wav --name LOOP --rate 22050 --block 32768 --no-verify-pcm --yes
     ./s2ksend.py --check 6 kick.wav                       # read-only: header + audio compared with a file
@@ -58,6 +60,17 @@ Every send flow: load and plan locally -> upload -> server rehearsal -> you conf
 * Stereo: a stereo WAV becomes two separate mono samples named the way the S2000 names its own pairs (name padded to 10 characters,
   then `-L` / `-R` as the last two of 12). They are **not linked** as a pair. `--mono-mix` sends one mono sample instead.
   If the second half fails the first is reported as already in RAM.
+
+## Your PiSCSI setup is kept
+Before the server stops `piscsi` it reads the attached devices with `scsictl -l` and saves them (in memory and in
+`<data-dir>/piscsi-snapshot.json`). After starting PiSCSI again it waits for the web UI's own default config to settle, then puts the
+setup back: it re-attaches what is missing (`scsictl -i ID[:LUN] -c attach -t TYPE -f FILE`, write protection included) and, in the default
+`--restore-piscsi exact` mode, detaches anything that was not there before, so the result matches what you had. `attach-only` never detaches;
+`off` just restarts the services as before. The snapshot is kept if the server restarts or a send fails while PiSCSI is stopped, and is applied
+by `--recover` / the next restart. Check what it sees with `./s2ksend.py --piscsi`.
+Limits: only what `scsictl -l` shows is restored (ID, LUN, type, image file, write protect), not vendor/product names or non-default block
+sizes. The output format of `scsictl -l` differs a little between PiSCSI versions, so confirm once with `--piscsi` that your devices are listed
+correctly before relying on it. This is simulator-tested (fake systemctl/scsictl) and not yet tried on a real PiSCSI.
 
 ## If something goes wrong
 After an error that may have written, the server leaves PiSCSI stopped and refuses work (`needs_attention`). Switch SCSI-MIDI off on the
