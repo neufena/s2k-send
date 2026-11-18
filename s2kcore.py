@@ -14,6 +14,8 @@ import collections
 import contextlib
 import io
 import json
+import math
+import numbers
 import os
 import re
 import select
@@ -30,7 +32,30 @@ ADDR = 0                    # SysEx device address used by MESA/the proven code
 PCM_BLOCK = 16384           # bytes per bulk write block (proven size)
 MAX_STATUS_POLLS = 128
 RATE = 44100                # default / highest rate
-RATES = (44100, 22050)      # the two rates the S2000 supports; 16-bit mono per sample
+NATIVE_RATES = {0: 22050, 1: 44100}     # header bandwidth byte -> the S2000's playback engine rate
+MIN_RATE, MAX_RATE = 4000, 65535        # any rate in between is sent as is; the header's 16-bit rate field caps it
+
+
+def valid_rate(rate):
+    return isinstance(rate, numbers.Integral) and not isinstance(rate, bool) and MIN_RATE <= rate <= MAX_RATE
+
+
+def rate_fields(rate):
+    """(bandwidth byte, pitch offset in semitones) for a sample rate. The S2000 plays at 22.05 or 44.1 kHz; any other
+    rate is played at the nearer one and retuned by the header's pitch offset (STUNO). The same rule AKAISDS uses over
+    MIDI, where the S2000 was seen to keep it."""
+    bandwidth = min(NATIVE_RATES, key=lambda b: abs(math.log2(rate / NATIVE_RATES[b])))
+    return bandwidth, 12 * math.log2(rate / NATIVE_RATES[bandwidth])
+
+
+def encode_tune(semitones):
+    """Pitch offset as stored at header bytes 20-21: signed 8.8 fixed point, little-endian (fraction byte first)."""
+    return (round(semitones * 256) & 0xFFFF).to_bytes(2, 'little')
+
+
+def decode_tune(two):
+    raw = int.from_bytes(two, 'little')
+    return (raw - 0x10000 if raw & 0x8000 else raw) / 256
 
 # Captured MESA wire template for a sample header: type 3, 44.1 kHz, mono, no loop,
 # play-to-end. Only name, root note, length, start/end and rate are patched.
@@ -53,6 +78,10 @@ def words_used(frames):
 
 class SendError(Exception):
     pass
+
+
+class ListMismatch(SendError):
+    """Every sample was sent and verified, but the S2000's lists afterwards are not what was expected."""
 
 
 class VerifyError(SendError):
@@ -95,10 +124,12 @@ def decode_name(raw12):
 
 
 def sample_header(name, root, frames, rate=RATE):
-    if not (1 <= frames <= 0xFFFFFFFF and 0 <= root < 128) or rate not in RATES:
+    if not (1 <= frames <= 0xFFFFFFFF and 0 <= root < 128) or not valid_rate(rate):
         raise SendError('bad frames/root/rate')
     h = bytearray(SAMPLE_TEMPLATE)
-    h[1] = 1 if rate == 44100 else 0      # bandwidth: 1 = 20 kHz, 0 = 10 kHz (Ohsaki's S3000 format notes)
+    bandwidth, tune = rate_fields(rate)
+    h[1] = bandwidth                      # 1 = 20 kHz (44.1 kHz engine), 0 = 10 kHz (22.05 kHz engine)
+    h[20:22] = encode_tune(tune)
     h[2] = root
     h[3:15] = encode_name(name)
     h[26:30] = frames.to_bytes(4, 'little')
@@ -188,7 +219,7 @@ class Inventory:
 # Field names follow Ohsaki's S3000 format notes; unnamed bytes are shown as 'other'.
 FIELDS = [(0, 1, 'type', True), (1, 2, 'bandwidth', False), (2, 3, 'root note', False),
           (3, 15, 'name', True), (15, 19, 'flags/loop bytes', False), (19, 20, 'playback type', False),
-          (20, 22, 'pitch offset', False), (22, 26, 'start address (internal)', False),
+          (20, 22, 'pitch offset', True), (22, 26, 'start address (internal)', False),
           (26, 30, 'length', True), (30, 34, 'start', False), (34, 38, 'end', False),
           (38, 136, 'loop data', False), (136, 138, 'stereo partner', False),
           (138, 140, 'sample rate', True), (140, 192, 'other', False)]
@@ -266,7 +297,8 @@ class Session:
 
     def __init__(self, bus, log, budget_s=600.0):
         self.bus, self.log = bus, log
-        self.deadline = time.monotonic() + budget_s
+        self.started = time.monotonic()
+        self.deadline = self.started + budget_s
         self.commands = 0
         self.mutated = False         # a write command has been dispatched
         self.block = PCM_BLOCK       # bytes per raw audio write
@@ -285,14 +317,16 @@ class Session:
             self.mutated = True
         want = len(data) if direction == 'out' else length
         self.commands += 1
+        t0 = time.monotonic()
         status, transferred, got = self.bus.execute(cdb, direction, data, length)
+        dt_ms = (time.monotonic() - t0) * 1000
         shown = got or data
         raw_pcm = cdb[0] in (12, 14) and cdb[5] == 0x80        # keep logs small: audio only as a prefix
         if raw_pcm and len(shown) > 20:
             shown_hex = shown[:20].hex() + f'...({len(shown)} bytes)'
         else:
             shown_hex = shown.hex()
-        self.log(f'{self.commands:5d} cdb={cdb.hex()} {direction:4s} want={want} '
+        self.log(f'{self.commands:5d} t={t0 - self.started:8.3f}s dt={dt_ms:7.1f}ms cdb={cdb.hex()} {direction:4s} want={want} '
                  f'status={status} xfer={transferred} data={shown_hex}')
         if status != 0:
             raise SendError(f'SCSI status 0x{status:02x} for cdb {cdb.hex()}')
@@ -494,7 +528,7 @@ class Session:
                         if field in ('start address (internal)', 'stereo partner') else '  [not critical]'))
         if any(d[5] for d in diffs):
             raise VerifyError('header read back from the S2000 differs in a field that matters '
-                              '(name, length or rate) - see the notes above and the transcript')
+                              '(type, name, length, rate or pitch offset) - see the notes above and the transcript')
         progress(f'header checked (sample slot {index})' + (' with notes above' if diffs else ''))
         if verify_pcm:
             progress('reading audio back to verify')
@@ -605,8 +639,9 @@ class MockS2000:
             if len(header) != 192:
                 raise SendError('mock: header length')
             rate = int.from_bytes(header[138:140], 'little')
-            if rate not in RATES or header[1] != (1 if rate == 44100 else 0):
-                raise SendError('mock: rate / bandwidth fields inconsistent')
+            bandwidth, tune = rate_fields(rate) if valid_rate(rate) else (None, None)
+            if bandwidth is None or header[1] != bandwidth or header[20:22] != encode_tune(tune):
+                raise SendError('mock: rate / bandwidth / pitch offset fields inconsistent')
             h = bytearray(header)                          # what the real S2000 was seen to do (16 Nov 2026):
             if h[136:138] == b'\x00\x00':                  # it stores 'no stereo partner' as ffff
                 h[136:138] = b'\xff\xff'
@@ -716,7 +751,7 @@ def _le_bytes(arr):
 
 
 def source_rate(path):
-    """Sample rate of the source file (wave module first, then soxi), default RATE."""
+    """Sample rate of the source file (wave module first, then soxi), None if it cannot be read."""
     try:
         with wave.open(path, 'rb') as w:
             return w.getframerate()
@@ -728,15 +763,27 @@ def source_rate(path):
             return int(float(r.stdout.strip()))
         except ValueError:
             pass
-    return RATE
+    return None
 
 
 def choose_rate(src, option='auto'):
-    """The S2000 supports 44.1 and 22.05 kHz. auto: sources at or below 22.05 kHz are sent at 22.05 kHz
-    (half the memory, nothing lost); anything above is sent at 44.1 kHz."""
-    if option in ('44100', '22050', 44100, 22050):
-        return int(option)
-    return 22050 if src <= 22050 else 44100
+    """auto: resample to one of the S2000's own rates (sources at or below 22.05 kHz to 22.05 kHz, half the memory
+    and nothing lost; anything above to 44.1 kHz). native: keep the source rate (no resampling; the header retunes
+    it). A number: resample to that rate."""
+    if option == 'auto':
+        return RATE if src is None or src > 22050 else 22050
+    if option == 'native':
+        if src is None:
+            raise SendError('cannot read the source sample rate, so it cannot be kept: give --rate HZ instead')
+        target = src
+    else:
+        try:
+            target = int(option)
+        except (TypeError, ValueError):
+            raise SendError(f'unknown rate option {option!r}: use auto, native or a number of Hz') from None
+    if not valid_rate(target):
+        raise SendError(f'{target} Hz is outside the {MIN_RATE}-{MAX_RATE} Hz the S2000 header can hold')
+    return target
 
 
 def load_audio(path, mono_mix=False, rate='auto'):
@@ -1017,7 +1064,7 @@ def sample_info(slot, name_raw, hdr):
     partner = int.from_bytes(hdr[136:138], 'little')
     return {'slot': slot, 'name': decode_name(name_raw),
             'frames': int.from_bytes(hdr[26:30], 'little'), 'rate': int.from_bytes(hdr[138:140], 'little'),
-            'root': hdr[2], 'bandwidth': hdr[1], 'playback': hdr[19],
+            'root': hdr[2], 'bandwidth': hdr[1], 'tune': decode_tune(hdr[20:22]), 'playback': hdr[19],
             'partner': None if partner == 0xFFFF else partner, 'header_hex': hdr.hex()}
 
 
@@ -1039,8 +1086,8 @@ def op_sample(sess, slot):
 def op_audio(sess, slot):
     """Read a sample's header and audio. Returns (info, raw 16-bit little-endian PCM)."""
     info = op_sample(sess, slot)
-    if info['frames'] < 1 or info['rate'] not in RATES:
-        raise SendError(f'slot {slot} does not hold a plain 16-bit {"/".join(str(r) for r in RATES)} Hz sample')
+    if info['frames'] < 1 or not valid_rate(info['rate']):
+        raise SendError(f'slot {slot} does not hold a plain 16-bit sample with a rate the header can describe')
     pcm = sess.read_pcm(slot, info['frames'] * 2, 'download', info['name'])
     return info, pcm
 
@@ -1154,7 +1201,7 @@ def op_send(sess, items, root, verify=True, progress=lambda m: None, done=None, 
     after = sess.inventory()                    # one check of the whole batch
     want = [encode_name(i.name) for i in items]
     if after.programs != first.programs or after.samples != first.samples + want:
-        raise SendError('the sample list after the batch is not what was expected (programs changed, or the '
+        raise ListMismatch('the sample list after the batch is not what was expected (programs changed, or the '
                           'new samples are not exactly the ones sent, in order)')
     st = sess.stats
     elapsed = time.monotonic() - t0

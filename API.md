@@ -5,7 +5,10 @@ plain HTTP + JSON on the home network. **There is no authentication or TLS: priv
 Default address `http://<pi>:8420`. All endpoints are under `/v1/`. CORS is open (`Access-Control-Allow-Origin: *`).
 
 ## Concepts
-* **Audio** is raw **16-bit signed little-endian MONO PCM** at **44100 or 22050 Hz** (the S2000's two rates).
+* **Audio** is raw **16-bit signed little-endian MONO PCM** at any integer `rate` from **4000 to 65535 Hz**. The S2000
+  plays at 22050 or 44100 Hz; for any other rate the server sets the header's bandwidth to the nearer of the two and a
+  pitch offset (`12 x log2(rate / engine rate)` semitones) so the sample plays at the right pitch. Only 44100 and 22050
+  are proven on hardware so far.
   Clients decide naming, stereo splitting (two samples, the S2000 convention `NAME      -L` / `NAME      -R`:
   stem padded to 10 characters, then `-L`/`-R` as the last two of 12, sent L then R: the S2000 then links them as a stereo pair itself), resampling and bit-depth conversion.
   `s2kclient.py` plus `s2kcore.load_audio` / `s2kcore.plan_items` do this for Python clients.
@@ -31,7 +34,7 @@ Default address `http://<pi>:8420`. All endpoints are under `/v1/`. CORS is open
 | Endpoint | Reply |
 |---|---|
 | `GET /v1/samples` | `{samples: [{slot, name}], programs: [name], free_headers, total_headers, free_words, total_words}` (memory in 16-bit words; bytes = x2) |
-| `GET /v1/samples/{slot}` | `{slot, name, frames, rate, root, bandwidth, playback, partner, header_hex}`; `partner` is `null` when unpaired (field `0xffff`), else the raw 16-bit value |
+| `GET /v1/samples/{slot}` | `{slot, name, frames, rate, root, bandwidth, tune, playback, partner, header_hex}` (`tune`: pitch offset in semitones); `partner` is `null` when unpaired (field `0xffff`), else the raw 16-bit value |
 | `GET /v1/samples/{slot}/audio?format=wav\|pcm` | the sample's audio (default WAV). Headers `X-S2K-Name`, `X-S2K-Rate`, `X-S2K-Frames`, `X-S2K-Root` |
 | `GET /v1/pairs` | `{samples, pairs: [{left: {slot, name, partner}, right: {...}, linked}], rule: {stride, base, consistent, notes} \| null, layout: {pairs, spacing, spacing_consistent, holes: [{before_slot, entries}], extra_entries, first_address, last_address} \| null}`: finds `-L`/`-R` pairs, decodes their stereo-partner fields, and reports the entry spacing and gaps those addresses imply |
 
@@ -54,7 +57,13 @@ simulated S2000), then start it.
 3. `POST /v1/jobs/{id}/start` returns `202`, `state: queued`, then `running`.
 4. Follow it: `GET /v1/jobs/{id}?since=N` (poll) or `GET /v1/jobs/{id}/events` (Server-Sent Events).
 5. `DELETE /v1/jobs/{id}` cancels a job that is not yet running (a running transfer cannot be stopped safely).
-   `GET /v1/jobs` lists recent jobs.
+   `GET /v1/jobs` lists recent jobs (the last 50 held in memory).
+6. `GET /v1/jobs/{id}/files` lists the evidence the server kept: `{id, files: [{name, bytes}]}`, and
+   `GET /v1/jobs/{id}/files/{name}` returns one file (`name` URL-encoded as a single path segment). Files are
+   `NAME.wav` (the exact audio sent), `transcript.log` (every SCSI command, with `t=` seconds since the session started
+   and `dt=` the command's duration) and, after a failed comparison, `NAME-expected.pcm` / `NAME-readback.pcm`.
+   This works for older jobs too, as long as their folder is still in `--data-dir`. Unknown jobs or files give `404`
+   (`no_such_job` / `no_such_file`).
 
 **Job object**
 ```json
@@ -70,11 +79,11 @@ simulated S2000), then start it.
 * `result.pairs` lists each `-L`/`-R` pair in the batch and whether the S2000 linked it (it does this itself when the `-R` arrives after the `-L`; both partner fields are read back to check).
 * `progress.phase` is one of `header`, `audio` (writing), `finalise`, `verify_header`, `verify_audio`; `done`/`total` are bytes.
 * Pass `since=<next from the previous reply>` to receive only new log lines.
-* `error.code` is one of `send_failed`, `verify_failed`, `needs_attention`, `rehearsal_failed`, `busy`, `internal_error`.
+* `error.code` is one of `send_failed`, `verify_failed`, `list_mismatch`, `needs_attention`, `rehearsal_failed`, `busy`, `internal_error`.
   `verify_failed` means the transfer completed and the bus is healthy, but a read-back comparison failed.
-  `send_failed` with the message "the sample list after the batch is not what was expected" means every sample was
-  sent and verified, but the S2000's list afterwards did not match; its state is uncertain, so the bus is left in
-  `needs_attention`. Do not retry: power-cycle, recover, and check the list.
+  `list_mismatch` means every sample was sent and verified, but the S2000's lists afterwards did not match what was
+  expected; its state is uncertain, so the bus is left in `needs_attention`. Do not retry: power-cycle, recover, and
+  check the list.
 * After `failed`, `error.done` lists samples already in the S2000's RAM (with slots) and `not_completed` those that are
   not (the one being sent when it stopped may be partly there).
 
@@ -98,8 +107,8 @@ curl "http://piscsi.local:8420/v1/jobs/$ID?since=0"
 AKAISDS (Python/Qt) already has a batch queue, a sample browser with a free-memory bar and per-sample rate settings. This API
 maps onto that directly:
 * the sample browser and memory bar use `GET /v1/samples`;
-* one job per queue run, with a sample entry per queued file (the GUI supplies the PCM and rate it already prepared, and
-  an optional per-sample `root`);
+* one job per queue run, with a sample entry per queued file (the GUI supplies the PCM at its own rate, no resampling
+  needed, and an optional per-sample `root`);
 * `progress` and the log drive the progress UI;
 * `GET /v1/samples/{slot}/audio` serves receiving.
 

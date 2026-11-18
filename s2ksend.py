@@ -14,6 +14,7 @@ server receives ready-to-send 16-bit mono PCM. Other commands: --status --list -
 import argparse
 import os
 import sys
+import time
 
 import s2kcore as core
 from s2kclient import S2KClient, S2KError
@@ -23,6 +24,14 @@ def say(msg):
     print(msg, flush=True)
 
 
+def rate_option(text):
+    if text in ('auto', 'native'):
+        return text
+    if text.isdigit() and core.valid_rate(int(text)):
+        return text
+    raise argparse.ArgumentTypeError(f"use auto, native or a rate from {core.MIN_RATE} to {core.MAX_RATE}")
+
+
 def build_parser():
     ap = argparse.ArgumentParser(description='Send WAV files to an Akai S2000 through s2kserver.')
     ap.add_argument('wavs', nargs='*', metavar='WAV', help='WAV files to send (or the output file for --download)')
@@ -30,8 +39,10 @@ def build_parser():
                     help='s2kserver URL (default $S2K_SERVER or http://localhost:8420)')
     ap.add_argument('--name', help='sample name on the S2000 (single file only; default: from the file name)')
     ap.add_argument('--root', type=int, default=60, help='root note, MIDI number (default 60)')
-    ap.add_argument('--rate', choices=['auto', '44100', '22050'], default='auto',
-                    help='sample rate on the S2000. auto: 22050 for sources at or below 22.05 kHz, else 44100')
+    ap.add_argument('--rate', type=rate_option, default='auto', metavar='auto|native|HZ',
+                    help='sample rate on the S2000. auto (default): resample to 22050 for sources at or below '
+                         '22.05 kHz, else 44100. native: keep the source rate (the header retunes it). '
+                         f'HZ: resample to that rate ({core.MIN_RATE}-{core.MAX_RATE})')
     ap.add_argument('--mono-mix', action='store_true',
                     help='stereo files: mix to ONE mono sample (default: two samples NAME-L and NAME-R)')
     ap.add_argument('--no-verify-pcm', action='store_true', help='skip reading the audio back (faster)')
@@ -48,6 +59,9 @@ def build_parser():
     ap.add_argument('--check', type=int, metavar='SLOT',
                     help='READ-ONLY: show the header of the sample in SLOT; with a WAV, also compare the audio')
     ap.add_argument('--download', type=int, metavar='SLOT', help='READ-ONLY: save the sample in SLOT as WAV (give the file name)')
+    ap.add_argument('--jobs', action='store_true', help='list recent send jobs')
+    ap.add_argument('--fetch-job', metavar='ID',
+                    help="save a job's evidence (audio sent, transcript, mismatch dumps) into a folder (default s2k-job-ID)")
     ap.add_argument('--recover', action='store_true',
                     help='after a failed send AND a power-cycle of the S2000 and the Pi: restart PiSCSI, accept work again')
     return ap
@@ -109,11 +123,12 @@ def show_check(c, slot, wav):
     say(f'slot {slot}: {info["name"]!r}')
     for lo, hi, field, _crit in [(f[0], f[1], f[2], f[3]) for f in core.FIELDS]:
         say(f'  bytes {lo:3d}-{hi - 1:3d} {field:26s} {hdr[lo:hi][:24].hex()}{"..." if hi - lo > 24 else ""}')
-    say(f'  -> {info["frames"]} frames, rate {info["rate"]} Hz, root {info["root"]}')
+    say(f'  -> {info["frames"]} frames, rate {info["rate"]} Hz, root {info["root"]}, '
+        f'bandwidth {info["bandwidth"]}' + (f', pitch offset {info["tune"]:+.2f} semitones' if 'tune' in info else ''))
     say('  -> stereo partner: none' if info['partner'] is None else
         f'  -> stereo partner field 0x{info["partner"]:04x} (linked; see --pairs for what it points to)')
     if wav:
-        chans, converted, rate = core.load_audio(wav)
+        chans, converted, rate = core.load_audio(wav, rate=str(info['rate']))   # compared at the sample's own rate
         if len(chans) != 1:
             raise core.SendError('that file is stereo: compare each half separately using the NAME-L / NAME-R files '
                                  'the server saved, or pass a mono file')
@@ -156,6 +171,15 @@ def show_pairs(c):
     if rule and not (lay and lay['holes']):
         say(f'  rule that fits {"all" if rule["consistent"] else "the first"} linked pair(s): '
             f'field = 0x{rule["base"]:04x} + {rule["stride"]} x slot of the partner')
+
+
+def fetch_job(c, job_id, folder):
+    files = c.job_files(job_id)
+    os.makedirs(folder, exist_ok=True)
+    for f in files:
+        with open(os.path.join(folder, os.path.basename(f['name'])), 'wb') as out:
+            out.write(c.job_file(job_id, f['name']))
+    say(f'saved {len(files)} file(s) from job {job_id} into {folder}/: ' + ', '.join(f['name'] for f in files))
 
 
 # ------------------------------------------------------------------ sending
@@ -208,7 +232,9 @@ def send(c, a):
         say('Already in the S2000 RAM from this run: ' + ', '.join(f'{d["name"]!r} (slot {d["slot"]})' for d in err['done']))
     if err.get('not_completed'):
         say('Not completed: ' + ', '.join(err['not_completed']))
-    if err.get('code') == 'needs_attention' or (err.get('code') == 'send_failed' and c.status()['bus']['state'] == 'needs_attention'):
+    if final['state'] == 'failed':
+        say(f'The transcript and the audio sent are kept on the server: s2ksend --fetch-job {final["id"]}')
+    if err.get('code') in ('needs_attention', 'list_mismatch') or (err.get('code') == 'send_failed' and c.status()['bus']['state'] == 'needs_attention'):
         say('Something may have been written and the S2000 may still be in SCSI-MIDI mode. Switch SCSI-MIDI off on it if')
         say('it is silent, power-cycle the S2000 and the Pi, then run: s2ksend --recover')
     return 1
@@ -249,6 +275,16 @@ def main(argv=None):
             with open(a.wavs[0], 'wb') as f:
                 f.write(wav)
             say(f'saved slot {a.download} {info["name"]!r} ({info["frames"]} frames, {info["rate"]} Hz) to {a.wavs[0]}')
+        elif a.jobs:
+            if a.wavs:
+                ap.error('--jobs takes no file names')
+            for j in c.jobs():
+                created = time.strftime('%d/%m/%Y %H:%M:%S', time.localtime(j['created']))
+                say(f'{j["id"]}  {j["state"]:9s}  {j["samples"]} sample(s)  created {created}')
+        elif a.fetch_job:
+            if len(a.wavs) > 1:
+                ap.error('--fetch-job ID takes at most one folder name')
+            fetch_job(c, a.fetch_job, a.wavs[0] if a.wavs else f's2k-job-{a.fetch_job}')
         elif a.recover:
             r = c.recover()
             say(f'bus: {r["bus"]["state"]}; PiSCSI: {r["bus"]["piscsi"]}')
