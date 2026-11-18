@@ -4,8 +4,8 @@
 Runs ON the Raspberry Pi with the PiSCSI board (as root). Clients (the CLI s2ksend.py, or a GUI) talk to it
 over plain HTTP/JSON on the home network. There is NO authentication: use it on a private network only.
 
-    sudo ./s2kserver.py                       # real hardware, port 8420
-    ./s2kserver.py --mock                     # simulated S2000: develop clients without any hardware
+    sudo s2kserver                            # real hardware, port 8420 (./s2kserver.py from a checkout)
+    s2kserver --mock                          # simulated S2000: develop clients without any hardware
 
 The API is documented in API.md. In short:
     GET  /v1/status                          server / bus state
@@ -431,8 +431,9 @@ def job_put(h, jid, index, query):
 @route('POST', r'/v1/jobs/([\w-]+)/start')
 def job_start(h, jid, query):
     job = h.jobs.get(jid)
+    since = len(job.log)                 # taken before queueing, so lines the worker logs at once are not skipped
     h.jobs.start(job)
-    h._json(202, job.snapshot(len(job.log)))
+    h._json(202, job.snapshot(since))
 
 
 @route('DELETE', r'/v1/jobs/([\w-]+)')
@@ -499,7 +500,8 @@ def main(argv=None):
     ap.add_argument('--port', type=int, default=8420)
     ap.add_argument('--target', type=int, default=6, help='S2000 SCSI ID (default 6)')
     ap.add_argument('--initiator', type=int, default=7, help="the Pi's SCSI ID (default 7; the Mac must be off)")
-    ap.add_argument('--helper', default=os.path.join(os.path.dirname(os.path.abspath(__file__)), 's2kexec'))
+    ap.add_argument('--helper', default=None,
+                    help='path to the s2kexec bus helper (default: next to s2kcore.py, then PATH)')
     ap.add_argument('--no-manage-piscsi', action='store_true',
                     help='do not stop/restart the piscsi service (then it must already be stopped)')
     ap.add_argument('--keep-bus', type=float, default=20.0,

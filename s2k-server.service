@@ -1,5 +1,7 @@
-# Install:  sudo mkdir -p /opt/s2k-send /var/lib/s2k-send
-#           sudo cp s2kcore.py s2kserver.py s2kexec /opt/s2k-send/      (build s2kexec first with `make`)
+# Install (from the project folder, on the Pi):
+#           sudo make install                                     (builds s2kexec into /usr/local/bin)
+#           sudo python3 -m venv /opt/s2k-send && sudo /opt/s2k-send/bin/pip install .
+#           sudo mkdir -p /var/lib/s2k-send
 #           sudo cp s2k-server.service /etc/systemd/system/ && sudo systemctl daemon-reload
 #           sudo systemctl enable --now s2k-server
 # The server must run as root (it drives the GPIO bus and stops/starts the piscsi service).
@@ -10,8 +12,7 @@ After=network-online.target
 
 [Service]
 Type=simple
-WorkingDirectory=/opt/s2k-send
-ExecStart=/usr/bin/python3 /opt/s2k-send/s2kserver.py --data-dir /var/lib/s2k-send --target 6 --initiator 7
+ExecStart=/opt/s2k-send/bin/s2kserver --data-dir /var/lib/s2k-send --target 6 --initiator 7
 Restart=on-failure
 RestartSec=5
 
