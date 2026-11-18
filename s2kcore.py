@@ -6,7 +6,7 @@ Used by the server (s2kserver.py, on the Raspberry Pi with the PiSCSI board), by
 The S2000's SCSI port tunnels MIDI SysEx (vendor commands 09 mode / 0C send / 0D status / 0E receive).
 The sequence and encodings follow a hardware-proven implementation (see README.md for provenance).
 """
-__version__ = '0.7.0'
+__version__ = '0.8.0'
 API_VERSION = 1
 
 import array
@@ -267,6 +267,7 @@ class Session:
         self.block = PCM_BLOCK       # bytes per raw audio write
         self.dump_dir = '.'          # where mismatch dumps go
         self.on_event = lambda e: None   # structured progress: {'phase', 'name', 'done', 'total'}
+        self.last_header = None      # header read back for the most recently sent sample
         self.inventory_after = None  # last inventory read; reused as the next sample's "before"
         self.stats = dict(w_bytes=0, w_s=0.0, r_bytes=0, r_s=0.0)
 
@@ -434,7 +435,7 @@ class Session:
         return inv
 
     # ---- the transfer
-    def send_sample(self, name, root, pcm, verify_pcm=True, progress=lambda m: None, rate=RATE):
+    def send_sample(self, name, root, pcm, verify_pcm=True, progress=lambda m: None, rate=RATE, refresh_inventory=True):
         frames = len(pcm) // 2
         before = self.inventory_after if self.inventory_after is not None else self.inventory()
         enc = encode_name(name)
@@ -463,14 +464,23 @@ class Session:
         progress('finalising')
         self.on_event({'phase': 'finalise', 'name': name})
         self.control(post_object(), 'ack')
-        after = self.inventory()
-        self.inventory_after = after
-        if after.programs != before.programs or enc not in after.samples \
-                or sorted(after.samples) != sorted(before.samples + [enc]):
-            raise SendError('inventory after the transfer is not what was expected')
-        index = after.samples.index(enc)
+        if refresh_inventory:
+            after = self.inventory()
+            self.inventory_after = after
+            if after.programs != before.programs or enc not in after.samples \
+                    or sorted(after.samples) != sorted(before.samples + [enc]):
+                raise SendError('inventory after the transfer is not what was expected')
+            index = after.samples.index(enc)
+        else:
+            # Batch mode: the new sample is appended, so its slot is the old count. The header read-back below
+            # checks the NAME at that slot; the caller re-reads the whole list once at the end of the batch.
+            index = len(before.samples)
+            self.inventory_after = Inventory(before.programs, before.samples + [enc], before.free_headers - 1,
+                                             before.free_words - (frames + frames % 2),
+                                             before.total_headers, before.total_words)
         self.on_event({'phase': 'verify_header', 'name': name})
         got = self.read_header(index)
+        self.last_header = got
         diffs = header_diffs(header, got)
         for a, b, field, sv, gv, critical in diffs:
             progress(f'  header note: bytes {a}-{b} ({field}) sent {sv[:32]} / S2000 reports {gv[:32]}'
@@ -546,6 +556,23 @@ class MockS2000:
             return 0, len(chunk), bytes(chunk)
         raise SendError(f'mock: unknown opcode {op:#x}')
 
+    @staticmethod
+    def _entry_address(slot):
+        return (0x6018 + 12 * slot).to_bytes(2, 'little')        # a table of 12-byte entries (no holes in this model)
+
+    def _autolink(self, slot):
+        """What the real S2000 was seen to do: a '-R' sample arriving after a '-L' sample with the same name start
+        gets paired with it: each header's partner field becomes the address of the other's entry."""
+        new = decode_name(self.samples[slot]['name'])
+        if not new.endswith('-R'):
+            return
+        for i, smp in enumerate(self.samples[:slot]):
+            if decode_name(smp['name'])[:-1] == new[:-1] and decode_name(smp['name']).endswith('L'):
+                hl, hr = bytearray(smp['header']), bytearray(self.samples[slot]['header'])
+                hl[136:138], hr[136:138] = self._entry_address(slot), self._entry_address(i)
+                smp['header'], self.samples[slot]['header'] = bytes(hl), bytes(hr)
+                return
+
     def _roster(self, op, names):
         n = len(names)
         return bytes([0xF0, 0x47, ADDR, op, 0x48, n & 127, n >> 7]) + b''.join(names) + b'\xF7'
@@ -588,6 +615,7 @@ class MockS2000:
             if len(self.pcm_in) != int.from_bytes(self.pending[26:30], 'little') * 2:
                 raise SendError('mock: PCM length differs from header')
             self.samples.append(dict(name=bytes(self.pending[3:15]), header=self.pending, pcm=bytes(self.pcm_in)))
+            self._autolink(len(self.samples) - 1)
             self.pending = self.pcm_in = None
             self.out += ACK
         elif op == 43:
@@ -1085,7 +1113,11 @@ def wav_bytes(pcm, rate):
 
 def op_send(sess, items, root, verify=True, progress=lambda m: None, done=None, sent_dir=None):
     """Send a batch. `done` (a list the caller owns) receives {'name', 'slot'} as each sample completes,
-    so a failure part-way still tells the caller what is already in the S2000's RAM."""
+    so a failure part-way still tells the caller what is already in the S2000's RAM.
+
+    The sample list is read once before and once after the whole batch (not after every sample); each sample's
+    name is checked at its slot by the header read-back. When a '-L' sample is followed by the matching '-R' the
+    S2000 links the two as a stereo pair by itself; its partner fields are read back to confirm."""
     done = [] if done is None else done
     total = sum(len(i.pcm) for i in items)
     if sent_dir:
@@ -1093,17 +1125,33 @@ def op_send(sess, items, root, verify=True, progress=lambda m: None, done=None, 
         for it in items:                         # exactly the audio that will be sent
             save_wav(os.path.join(sent_dir, safe_stem(it.name) + '.wav'), it.pcm, it.rate)
     t0 = time.monotonic()
-    sess.preflight([i.name for i in items], [len(i.pcm) // 2 for i in items])
+    first = sess.preflight([i.name for i in items], [len(i.pcm) // 2 for i in items])
+    pairs = []
     for n, it in enumerate(items, 1):
         progress(f'--- [{n}/{len(items)}] {it.name!r} ({it.rate} Hz)')
         idx = sess.send_sample(it.name, root if it.root is None else it.root, it.pcm, verify,
-                               progress=progress, rate=it.rate)
+                               progress=progress, rate=it.rate, refresh_inventory=False)
         done.append({'name': it.name, 'slot': idx})
         progress(f'DONE: {it.name!r} is in sample slot {idx}.')
+        prev = items[n - 2] if n >= 2 else None
+        if prev is not None and it.name.endswith('-R') and prev.name.endswith('-L') and it.name[:-1] == prev.name[:-1]:
+            fr = int.from_bytes(sess.last_header[136:138], 'little')
+            fl = int.from_bytes(sess.read_header(done[-2]['slot'])[136:138], 'little')
+            linked = 0xFFFF not in (fl, fr) and fl - fr == 12
+            pairs.append({'left': prev.name, 'right': it.name, 'left_slot': done[-2]['slot'], 'right_slot': idx,
+                          'linked': linked, 'left_partner': fl, 'right_partner': fr})
+            progress(f'stereo pair {it.name[:-2].strip()!r}: '
+                     + ('linked by the S2000 (partner fields 0x%04x / 0x%04x)' % (fl, fr) if linked else
+                        'NOT linked (partner fields 0x%04x / 0x%04x)' % (fl, fr)))
+    after = sess.inventory()                    # one check of the whole batch
+    want = [encode_name(i.name) for i in items]
+    if after.programs != first.programs or after.samples != first.samples + want:
+        raise VerifyError('the sample list after the batch is not what was expected (programs changed, or the '
+                          'new samples are not exactly the ones sent, in order)')
     st = sess.stats
     elapsed = time.monotonic() - t0
-    return {'samples': done, 'commands': sess.commands, 'audio_bytes': total, 'elapsed_s': round(elapsed, 2),
-            'overall_kbps': round(total / max(elapsed, 1e-9) / 1000, 1),
+    return {'samples': done, 'pairs': pairs, 'commands': sess.commands, 'audio_bytes': total,
+            'elapsed_s': round(elapsed, 2), 'overall_kbps': round(total / max(elapsed, 1e-9) / 1000, 1),
             'write_kbps': round(st['w_bytes'] / st['w_s'] / 1000, 1) if st['w_s'] else None,
             'verify_kbps': round(st['r_bytes'] / st['r_s'] / 1000, 1) if st['r_s'] else None,
             'block': sess.block}
@@ -1139,6 +1187,7 @@ class BusManager:
         self.state = 'idle'                  # idle | busy | needs_attention
         self._timer = None
         self._tlock = threading.Lock()
+        self._restoring = False              # the keep-bus timer is restarting PiSCSI (a few seconds)
 
     # -- status
     def piscsi_state(self):
@@ -1163,12 +1212,16 @@ class BusManager:
                 self._timer = None
 
     def _timed_restart(self):
-        if self.lock.acquire(blocking=False):
-            try:
-                if self.state == 'idle':
-                    self._restore()
-            finally:
-                self.lock.release()
+        self._restoring = True
+        try:
+            if self.lock.acquire(blocking=False):
+                try:
+                    if self.state == 'idle':
+                        self._restore()
+                finally:
+                    self.lock.release()
+        finally:
+            self._restoring = False
 
     def _schedule_restart(self):
         if self.mock is not None or not self.manage_piscsi:
@@ -1206,7 +1259,10 @@ class BusManager:
             raise NeedsAttention('a previous send left the bus in an uncertain state: power-cycle the S2000 '
                                  'and the Pi, then POST /v1/recover')
         if not self.lock.acquire(blocking=False):
-            raise Busy('another operation is using the bus')
+            # A short PiSCSI restart by the keep-bus timer is not a real operation: wait for it. A running
+            # operation (a send job can take minutes) is reported as busy at once.
+            if not (self._restoring and self.lock.acquire(timeout=60)):
+                raise Busy('another operation is using the bus')
         self.state = 'busy'
         bus = sess = None
         outcome = 'ok'

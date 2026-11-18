@@ -236,8 +236,6 @@ class JobManager:
                         sess.block, sess.on_event, sess.dump_dir = job.block, job.on_event, job.dir
                         job.result = core.op_send(sess, items, job.root, job.verify, progress=job.add_log,
                                                   done=job.done, sent_dir=job.dir)
-                    job.add_log(f'All done: {len(job.done)} sample(s), {job.result["audio_bytes"] / 1000:.0f} KB in '
-                                f'{job.result["elapsed_s"]} s')
                     job.set_state('done')
                     return
                 except Busy:

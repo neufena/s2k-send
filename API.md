@@ -7,7 +7,7 @@ Default address `http://<pi>:8420`. All endpoints are under `/v1/`. CORS is open
 ## Concepts
 * **Audio** is raw **16-bit signed little-endian MONO PCM** at **44100 or 22050 Hz** (the S2000's two rates).
   Clients decide naming, stereo splitting (two samples, the S2000 convention `NAME      -L` / `NAME      -R`:
-  stem padded to 10 characters, then `-L`/`-R` as the last two of 12), resampling and bit-depth conversion.
+  stem padded to 10 characters, then `-L`/`-R` as the last two of 12, sent L then R: the S2000 then links them as a stereo pair itself), resampling and bit-depth conversion.
   `s2kclient.py` plus `s2kcore.load_audio` / `s2kcore.plan_items` do this for Python clients.
 * **Names**: up to 12 characters from `0-9`, space, `A-Z`, `#`, `+`, `-`, `.`. The server rejects anything else.
 * **Slots** are 0-based positions in the S2000's sample list. New samples are appended.
@@ -63,10 +63,11 @@ simulated S2000), then start it.
  "rehearsal": {"ok": true, "commands": 207},
  "progress": {"phase": "audio", "name": "KICK", "sample_index": 0, "done": 16384, "total": 35280},
  "log": [{"n": 0, "t": 1794901107.2, "msg": "..."}], "next": 12,
- "result": {"samples": [{"name": "KICK", "slot": 5}], "commands": 183, "audio_bytes": 651324, "elapsed_s": 9.8,
+ "result": {"samples": [{"name": "KICK", "slot": 5}], "pairs": [{"left": "LOOP      -L", "right": "LOOP      -R", "left_slot": 6, "right_slot": 7, "linked": true, "left_partner": 24672, "right_partner": 24660}], "commands": 183, "audio_bytes": 651324, "elapsed_s": 9.8,
             "overall_kbps": 66.5, "write_kbps": 310.2, "verify_kbps": 205.0, "block": 16384},
  "error": {"code": "send_failed", "message": "...", "done": [{"name": "KICK", "slot": 5}], "not_completed": ["PAD"]}}
 ```
+* `result.pairs` lists each `-L`/`-R` pair in the batch and whether the S2000 linked it (it does this itself when the `-R` arrives after the `-L`; both partner fields are read back to check).
 * `progress.phase` is one of `header`, `audio` (writing), `finalise`, `verify_header`, `verify_audio`; `done`/`total` are bytes.
 * Pass `since=<next from the previous reply>` to receive only new log lines.
 * `error.code` is one of `send_failed`, `verify_failed`, `needs_attention`, `rehearsal_failed`, `busy`, `internal_error`.

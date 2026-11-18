@@ -15,11 +15,12 @@ through its SCSI-MIDI tunnel (vendor commands 09/0C/0D/0E carrying Akai SysEx), 
 * **Home network only**: the server has no authentication.
 
 ## Status (read this first)
-* **Hardware-verified earlier (single-file tool, 16 Nov 2026):** mono and stereo sends, 44.1 kHz, byte-for-byte audio read-back,
+* **Hardware-verified (17 Nov 2026, server on the Pi, client on another computer):** `--status`, `--list`, a batch (mono + stereo, verified
+  byte-for-byte), `--check`, `--download`, `--pairs`, the busy/not-found error paths. **Earlier, single-file tool (16 Nov 2026):** mono and stereo sends, 44.1 kHz, byte-for-byte audio read-back,
   header checks, read-only inspection of samples and stereo pairs. See the hardware log below.
-* **The client/server split (v0.7) is simulator-tested only so far**: server, client, CLI, job queue, failure handling and the
-  real-bus code path (through a fake bus helper) all pass `./run_tests.sh`; the server has not yet run on the Pi.
-* **Not yet tried on hardware:** 22.05 kHz, `--block 32768`, batches of many files, the HTTP server itself.
+* **Since that run (v0.8), simulator-tested only:** PiSCSI setup retention, batch-mode inventory, pair link report, busy-wait during the
+  keep-bus restart, duplicate-line fixes. All pass `./run_tests.sh`.
+* **Not yet tried on hardware:** 22.05 kHz (use a new `--name`), `--block 32768`, batches of many files, PiSCSI setup retention.
 * Fewer safety gates than the original project this knowledge came from (no replay gate, no pinned hashes). The rehearsal and the
   audio read-back are the substitutes. **Provenance and licence: see the end of this file.**
 
@@ -57,9 +58,12 @@ Every send flow: load and plan locally -> upload -> server rehearsal -> you conf
 * Speed: each run reports audio-write, verify-read and overall KB/s. Try `--block 32768` (MESA's size; default 16384 is the size proven
   here) and `--no-verify-pcm` (the read-back takes about as long again as the send). The sample-list read after each sample is reused
   as the next one's starting point.
-* Stereo: a stereo WAV becomes two separate mono samples named the way the S2000 names its own pairs (name padded to 10 characters,
-  then `-L` / `-R` as the last two of 12). They are **not linked** as a pair. `--mono-mix` sends one mono sample instead.
-  If the second half fails the first is reported as already in RAM.
+* Stereo: a stereo WAV becomes two mono samples named the way the S2000 names its own pairs (name padded to 10 characters, then
+  `-L` / `-R` as the last two of 12), sent L then R. **The S2000 links them as a stereo pair by itself** when the R arrives (seen on
+  hardware, 17 Nov 2026); the job checks both partner fields afterwards and reports `linked` or `NOT linked`. `--mono-mix` sends one
+  mono sample instead. If the second half fails the first is reported as already in RAM.
+* Command count is what costs time (about 50 ms per SCSI command): a send reads the sample list once before and once after the batch
+  (not after every sample); each sample's name is checked at its slot by the header read-back.
 
 ## Your PiSCSI setup is kept
 Before the server stops `piscsi` it reads the attached devices with `scsictl -l` and saves them (in memory and in
@@ -88,16 +92,16 @@ and CLI against a simulated S2000 (batches, both rates, stereo, errors, busy bus
 s2kcore.py (protocol, simulator, bus manager, audio helpers) | s2kserver.py | s2kclient.py | s2ksend.py (CLI) | API.md |
 s2kexec.cpp + Makefile (bus helper, no Akai logic) | gpio-source/ (BSD-3 initiator code, licence kept) | s2k-server.service | tests/
 
-## Stereo pair research (S2000 with pairs loaded from disk)
-* A mono sample reads back partner field 0xffff (= none). In every real pair, each field is the internal address of the *partner's*
-  12-byte entry: L's field = address(R), R's field = address(L), and **address(R) = address(L) + 12 in all 29 pairs seen** (59 samples,
-  17 Nov 2026), so the S2000 keeps L and R in adjacent entries (12 = bytes per name in the sample roster).
-* The address is **not** `base + 12 x slot`: in that data set 36 extra 12-byte entries sit between groups of pairs (at slots 4 (+3),
-  8 (+4), 14 (+5), 22 (+5), 30 (+4), 36 (+4), 42 (+3), 46 (+4), 52 (+4)), and the first pair's base differed between two sessions
-  (0x6030, then 0x6024). The entries probably also hold programs or deleted samples; the address of the next free entry therefore cannot
-  be derived from the slot number. `--pairs` reports this; `--list` shows programs and header usage for checking the idea.
-* Linking new pairs by writing this field is **not implemented**: it is an internal address that depends on the S2000's load history,
-  the S2000 rewrote a 0000 we sent into ffff on a mono sample (so it may not accept a supplied value), and a wrong address could upset it.
+## Stereo pairs: the S2000 links them itself
+* **Sending a correctly named pair links it.** `LOOP      -L` then `LOOP      -R` (S2000 naming, -L/-R as the last two of 12 characters) were
+  sent with partner field 0000; the S2000 stored `ffff` for the L, and when the R arrived it set both fields itself: L = 0x6060,
+  R = 0x6054, the addresses of each other's entry (17 Nov 2026). Earlier sends named `LOOP-L` / `LOOP-R` (the suffix right after the name)
+  were not linked (both stayed `ffff`), so the naming convention is what triggers it. **Writing the partner field is not needed.**
+* What the field is: in every real pair (29 loaded from disk, plus this one) each field is the internal address of the partner's 12-byte
+  entry and `address(R) = address(L) + 12`. On a sampler with no holes in its table the address is `0x6018 + 12 x slot` (0x6018 on the
+  4-sample, 1-program state seen last); after much loading and deleting the base moves and extra entries sit between groups of pairs
+  (0x6030 and 0x6024 seen as bases; 36 extra entries across 58 samples). `--pairs` reports the spacing and any gaps.
+* Not yet tested: sending R before L, or a different sample in between, to see whether the link still forms.
 
 ## Provenance and licence (please read before sharing)
 * The command sequence and encodings follow the S2000 Bridge release (michaelsanois/s2000-bridge) and the
@@ -127,3 +131,8 @@ s2kexec.cpp + Makefile (bus helper, no Akai logic) | gpio-source/ (BSD-3 initiat
 * v0.6 (batches, 22.05 kHz, --block, speed report) is simulator-tested only so far (tests/: parity, verify, physical flow
   through a fake helper at both rates and both block sizes, batch/rate/name planning).
 * v0.7: split into server / client / CLI with an HTTP API; simulator-tested only (see Status).
+* 17 Nov 2026, v0.7 server on the Pi (client on another computer): kick.wav + loop.wav (3 samples, 687 KB) sent and verified, 201 commands in 11.06 s
+  (audio writes 227 KB/s at block 16384, verify reads 412 KB/s, 62 KB/s overall: the time is mostly per-command latency, ~50 ms each).
+  The S2000 linked LOOP -L / -R as a stereo pair on its own. A GET that arrived while the keep-bus timer was restarting PiSCSI got 409 busy
+  (fixed in v0.8: it now waits). Duplicate 'rehearsal OK' / 'All done' / failure lines in the CLI output fixed in v0.8.
+* v0.8: PiSCSI setup retention (snapshot/reconcile), batch-mode inventory, stereo link report.

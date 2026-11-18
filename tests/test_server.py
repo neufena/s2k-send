@@ -55,6 +55,10 @@ assert [(d['name'].strip(), d['slot']) for d in final['result']['samples']] == [
 assert final['rehearsal']['ok'] and any('audio verified byte-for-byte' in x for x in lines)
 assert any(p_.get('phase') == 'audio' and p_.get('total') for p_ in prog) or True       # polling may miss fast phases
 r = final['result']
+assert len(r['pairs']) == 1 and r['pairs'][0]['linked'] and r['pairs'][0]['left_slot'] == 3 and r['pairs'][0]['right_slot'] == 4, r['pairs']
+assert r['pairs'][0]['left_partner'] - r['pairs'][0]['right_partner'] == 12
+assert c.sample(3)['partner'] - c.sample(4)['partner'] == 12
+assert any('linked by the S2000' in x for x in lines), lines
 assert r['audio_bytes'] == sum(len(i.pcm) for i in items) and r['commands'] > 0 and r['verify_kbps'] is not None
 
 # the S2000 (simulated) now holds them: list, header, and an audio round trip
@@ -63,7 +67,8 @@ assert [s['name'] for s in inv['samples']][1:] == [i.name for i in items] or \
        [s['name'].strip() for s in inv['samples']][1:] == [i.name.strip() for i in items], inv
 for slot, it in zip((1, 2, 3, 4), items):
     info = c.sample(slot)
-    assert info['rate'] == it.rate and info['frames'] == len(it.pcm) // 2 and info['partner'] is None, info
+    assert info['rate'] == it.rate and info['frames'] == len(it.pcm) // 2, info
+    assert (info['partner'] is not None) == (slot in (3, 4)), (slot, info['partner'])      # the S2000 links -L/-R by itself
     assert info['bandwidth'] == (1 if it.rate == 44100 else 0)
     meta, pcm = c.sample_audio(slot, 'pcm')
     assert pcm == it.pcm and meta['rate'] == it.rate and meta['frames'] == len(it.pcm) // 2
@@ -182,6 +187,8 @@ rc, out = cli('--list'); assert rc == 0 and "'KICK" in out and 'free:' in out, o
 rc, out = cli('--piscsi'); assert rc == 0 and 'unmanaged' in out and 'restore mode' in out, out
 rc, out = cli('--yes', pad := mkwav('pad2.wav', 1, 22050, 0.5), l)
 assert rc == 0 and 'server rehearsal OK' in out and 'All done.' in out and 'Slots:' in out and 'KB/s' in out, out
+assert out.count('rehearsal OK') == 1 and out.count('All done') == 1, out                  # no duplicated lines
+assert "stereo pair 'LOOP': linked by the S2000" in out, out
 assert 'PAD2=1' in out and 'LOOP      -L=2' in out and 'LOOP      -R=3' in out, out
 rc, out = cli('--list'); assert rc == 0 and out.count("'") >= 6 and 'PAD2' in out and 'LOOP      -R' in out, out
 rc, out = cli('--check', '1', os.path.join(tmp, 'pad2.wav'))
@@ -189,7 +196,7 @@ assert rc == 0 and 'audio MATCHES the file byte-for-byte' in out and '22050 Hz' 
 rc, out = cli('--download', '1', os.path.join(tmp, 'dl.wav')); assert rc == 0 and os.path.getsize(os.path.join(tmp, 'dl.wav')) > 44, out
 rc, out = cli('--pairs'); assert rc == 0, out
 rc, out = cli('--yes', k)                                   # KICK already exists on the simulated S2000
-assert rc == 1 and 'SEND_FAILED' in out and 'already on the S2000' in out and 'Not completed: KICK' in out, out
+assert rc == 1 and 'FAILED (send_failed)' in out and out.count('already on the S2000') == 1 and 'Not completed: KICK' in out, out
 rc, out = cli('--check', '99'); assert rc == 1 and 'STOP' in out, out
 os.environ['S2K_SERVER'] = 'http://127.0.0.1:9'
 srv.shutdown()
