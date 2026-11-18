@@ -77,8 +77,10 @@ Every send: load and plan locally -> upload -> server rehearsal -> you confirm -
 ### Names, rates and stereo
 * Names come from the file names (12 characters from `0-9`, space, `A-Z`, `#`, `+`, `-`, `.`; duplicates get a number, e.g. KICK,
   KICK2). `--name` is for a single file.
-* `--rate auto` (default): sources at or below 22.05 kHz go as 22.05 kHz, anything above as 44.1 kHz. `--rate 44100|22050` forces one
-  (sox resamples with dither off, so conversions are repeatable).
+* `--rate auto` (default): resample to one of the S2000's own rates (sources at or below 22.05 kHz to 22.05 kHz, anything above
+  to 44.1 kHz). `--rate native` keeps the source rate, from 4 kHz to 65.535 kHz, with no resampling: the header retunes it to play
+  at the right pitch (simulator-tested only). `--rate HZ` resamples to that rate. sox resamples with dither off, so conversions are
+  repeatable.
 * A stereo WAV becomes two mono samples named the way the S2000 names its own pairs (name padded to 10 characters, then `-L` / `-R`
   as the last two of 12), sent L then R. **The S2000 links them as a stereo pair by itself** when the R arrives; the job checks both
   partner fields afterwards and reports `linked` or `NOT linked`. `--mono-mix` sends one mono sample instead.

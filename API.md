@@ -5,7 +5,10 @@ plain HTTP + JSON on the home network. **There is no authentication or TLS: priv
 Default address `http://<pi>:8420`. All endpoints are under `/v1/`. CORS is open (`Access-Control-Allow-Origin: *`).
 
 ## Concepts
-* **Audio** is raw **16-bit signed little-endian MONO PCM** at **44100 or 22050 Hz** (the S2000's two rates).
+* **Audio** is raw **16-bit signed little-endian MONO PCM** at any integer `rate` from **4000 to 65535 Hz**. The S2000
+  plays at 22050 or 44100 Hz; for any other rate the server sets the header's bandwidth to the nearer of the two and a
+  pitch offset (`12 x log2(rate / engine rate)` semitones) so the sample plays at the right pitch. Only 44100 and 22050
+  are proven on hardware so far.
   Clients decide naming, stereo splitting (two samples, the S2000 convention `NAME      -L` / `NAME      -R`:
   stem padded to 10 characters, then `-L`/`-R` as the last two of 12, sent L then R: the S2000 then links them as a stereo pair itself), resampling and bit-depth conversion.
   `s2kclient.py` plus `s2kcore.load_audio` / `s2kcore.plan_items` do this for Python clients.
@@ -31,7 +34,7 @@ Default address `http://<pi>:8420`. All endpoints are under `/v1/`. CORS is open
 | Endpoint | Reply |
 |---|---|
 | `GET /v1/samples` | `{samples: [{slot, name}], programs: [name], free_headers, total_headers, free_words, total_words}` (memory in 16-bit words; bytes = x2) |
-| `GET /v1/samples/{slot}` | `{slot, name, frames, rate, root, bandwidth, playback, partner, header_hex}`; `partner` is `null` when unpaired (field `0xffff`), else the raw 16-bit value |
+| `GET /v1/samples/{slot}` | `{slot, name, frames, rate, root, bandwidth, tune, playback, partner, header_hex}` (`tune`: pitch offset in semitones); `partner` is `null` when unpaired (field `0xffff`), else the raw 16-bit value |
 | `GET /v1/samples/{slot}/audio?format=wav\|pcm` | the sample's audio (default WAV). Headers `X-S2K-Name`, `X-S2K-Rate`, `X-S2K-Frames`, `X-S2K-Root` |
 | `GET /v1/pairs` | `{samples, pairs: [{left: {slot, name, partner}, right: {...}, linked}], rule: {stride, base, consistent, notes} \| null, layout: {pairs, spacing, spacing_consistent, holes: [{before_slot, entries}], extra_entries, first_address, last_address} \| null}`: finds `-L`/`-R` pairs, decodes their stereo-partner fields, and reports the entry spacing and gaps those addresses imply |
 
@@ -104,8 +107,8 @@ curl "http://piscsi.local:8420/v1/jobs/$ID?since=0"
 AKAISDS (Python/Qt) already has a batch queue, a sample browser with a free-memory bar and per-sample rate settings. This API
 maps onto that directly:
 * the sample browser and memory bar use `GET /v1/samples`;
-* one job per queue run, with a sample entry per queued file (the GUI supplies the PCM and rate it already prepared, and
-  an optional per-sample `root`);
+* one job per queue run, with a sample entry per queued file (the GUI supplies the PCM at its own rate, no resampling
+  needed, and an optional per-sample `root`);
 * `progress` and the log drive the progress UI;
 * `GET /v1/samples/{slot}/audio` serves receiving.
 

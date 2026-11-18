@@ -135,8 +135,8 @@ class JobManager:
             if name in seen:
                 raise ApiError(400, 'duplicate_name', f'name {name!r} appears twice in the job')
             seen.add(name)
-            if rate not in core.RATES:
-                raise ApiError(400, 'bad_rate', f'sample {i}: rate must be one of {list(core.RATES)}')
+            if not core.valid_rate(rate):
+                raise ApiError(400, 'bad_rate', f'sample {i}: rate must be an integer from {core.MIN_RATE} to {core.MAX_RATE}')
             if not isinstance(frames, int) or frames < 1:
                 raise ApiError(400, 'bad_frames', f'sample {i}: frames must be a positive integer')
             if sroot is not None and (not isinstance(sroot, int) or not 0 <= sroot < 128):

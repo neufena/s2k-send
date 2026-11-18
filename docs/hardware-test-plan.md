@@ -45,6 +45,15 @@ wrong or missing.
 2. `s2ksend --check SLOT kick.wav` (slot from step 1): bandwidth 0, rate 22050.
 3. Play KICKA and KICK22 on the S2000: **same pitch**, KICK22 duller (half the bandwidth).
 
+## 5b. Other sample rates (no resampling)
+Make test tones at 32 kHz, 11.025 kHz and 48 kHz (`sox -n -r 32000 -b 16 t32.wav synth 2 sine 440`, and likewise), then
+send each with `--rate native`: `s2ksend t32.wav --rate native --name T32 --yes`.
+1. Expect `audio verified byte-for-byte` and no critical header notes (the pitch offset is checked on read-back).
+2. `s2ksend --check SLOT t32.wav`: rate 32000, bandwidth 1, pitch offset -5.55 (11025: bandwidth 0, -12.00; 48000:
+   bandwidth 1, +1.47).
+3. Play each on the S2000 against a 44.1 kHz 440 Hz tone: **all the same pitch**.
+4. `s2ksend --download SLOT t32back.wav` and check the WAV is 32 kHz.
+
 ## 6. Large batch, and the slot-order assumption
 Batch mode assumes the S2000 adds each new sample at the end of its list, in the order sent.
 1. Send about 15 short files in one run. Expect every sample verified and the final list check to pass.
@@ -77,6 +86,7 @@ Run AKAISDS's own plan (`tests/s2k_test_plan.md` in that repo) against the same 
 | 3 PiSCSI restore / keep-bus | | | |
 | 4 Block 16384 / 32768 | | write KB/s: / ; verify KB/s: / | |
 | 5 22.05 kHz | | | |
+| 5b Other rates (32k / 11.025k / 48k) | | pitch offsets: / / | |
 | 6 Large batch / gap | | | |
 | 7 Stereo R-before-L / in between | | | |
 | 8 Download | | | |

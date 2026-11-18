@@ -24,6 +24,14 @@ def say(msg):
     print(msg, flush=True)
 
 
+def rate_option(text):
+    if text in ('auto', 'native'):
+        return text
+    if text.isdigit() and core.valid_rate(int(text)):
+        return text
+    raise argparse.ArgumentTypeError(f"use auto, native or a rate from {core.MIN_RATE} to {core.MAX_RATE}")
+
+
 def build_parser():
     ap = argparse.ArgumentParser(description='Send WAV files to an Akai S2000 through s2kserver.')
     ap.add_argument('wavs', nargs='*', metavar='WAV', help='WAV files to send (or the output file for --download)')
@@ -31,8 +39,10 @@ def build_parser():
                     help='s2kserver URL (default $S2K_SERVER or http://localhost:8420)')
     ap.add_argument('--name', help='sample name on the S2000 (single file only; default: from the file name)')
     ap.add_argument('--root', type=int, default=60, help='root note, MIDI number (default 60)')
-    ap.add_argument('--rate', choices=['auto', '44100', '22050'], default='auto',
-                    help='sample rate on the S2000. auto: 22050 for sources at or below 22.05 kHz, else 44100')
+    ap.add_argument('--rate', type=rate_option, default='auto', metavar='auto|native|HZ',
+                    help='sample rate on the S2000. auto (default): resample to 22050 for sources at or below '
+                         '22.05 kHz, else 44100. native: keep the source rate (the header retunes it). '
+                         f'HZ: resample to that rate ({core.MIN_RATE}-{core.MAX_RATE})')
     ap.add_argument('--mono-mix', action='store_true',
                     help='stereo files: mix to ONE mono sample (default: two samples NAME-L and NAME-R)')
     ap.add_argument('--no-verify-pcm', action='store_true', help='skip reading the audio back (faster)')
@@ -113,7 +123,8 @@ def show_check(c, slot, wav):
     say(f'slot {slot}: {info["name"]!r}')
     for lo, hi, field, _crit in [(f[0], f[1], f[2], f[3]) for f in core.FIELDS]:
         say(f'  bytes {lo:3d}-{hi - 1:3d} {field:26s} {hdr[lo:hi][:24].hex()}{"..." if hi - lo > 24 else ""}')
-    say(f'  -> {info["frames"]} frames, rate {info["rate"]} Hz, root {info["root"]}')
+    say(f'  -> {info["frames"]} frames, rate {info["rate"]} Hz, root {info["root"]}, '
+        f'bandwidth {info["bandwidth"]}, pitch offset {info["tune"]:+.2f} semitones')
     say('  -> stereo partner: none' if info['partner'] is None else
         f'  -> stereo partner field 0x{info["partner"]:04x} (linked; see --pairs for what it points to)')
     if wav:

@@ -91,6 +91,16 @@ err(lambda: c.job_file(final['id'], '../../../etc/passwd'), 'no_such_file', 404)
 err(lambda: c.job_file(final['id'], 'nothing.wav'), 'no_such_file', 404)
 err(lambda: c.job_files('no-such-job'), 'no_such_job', 404)
 
+# any rate the header can hold: sent as is, retuned by the pitch offset, downloaded at the same rate
+odd = c.send([core.Item('RATE32K', bytes(range(256)) * 50, 32000, 'r', False)])
+assert odd['state'] == 'done', odd
+slot32 = odd['result']['samples'][0]['slot']
+info32 = c.sample(slot32)
+assert (info32['rate'], info32['bandwidth']) == (32000, 1) and abs(info32['tune'] - core.rate_fields(32000)[1]) < 1 / 256, info32
+meta, wav32 = c.sample_audio(slot32, 'wav')
+with wave.open(io.BytesIO(wav32)) as w:
+    assert w.getframerate() == 32000 and w.readframes(w.getnframes()) == bytes(range(256)) * 50
+
 # a wrong sample list after the batch has its own error code, and the bus is left needing attention
 class Surprise(core.MockS2000):
     def _sysex(self, f):
@@ -110,7 +120,8 @@ def post(obj): return c._json('POST', '/v1/jobs', obj)
 err(lambda: post({'samples': [{'name': 'bad/name', 'rate': 44100, 'frames': 10}]}), 'invalid_name', 400)
 err(lambda: post({'samples': [{'name': 'THIRTEEN CHARS', 'rate': 44100, 'frames': 10}]}), 'invalid_name', 400)
 err(lambda: post({'samples': [{'name': 'A', 'rate': 44100, 'frames': 10}, {'name': 'A', 'rate': 44100, 'frames': 10}]}), 'duplicate_name', 400)
-err(lambda: post({'samples': [{'name': 'A', 'rate': 48000, 'frames': 10}]}), 'bad_rate', 400)
+for bad in (3999, 65536, '44100', 44100.0):
+    err(lambda: post({'samples': [{'name': 'A', 'rate': bad, 'frames': 10}]}), 'bad_rate', 400)
 err(lambda: post({'samples': [{'name': 'A', 'rate': 44100, 'frames': 0}]}), 'bad_frames', 400)
 err(lambda: post(big(root=200)), 'bad_root', 400)
 err(lambda: post(big(block=1000)), 'bad_block', 400)
