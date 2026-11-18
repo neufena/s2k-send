@@ -14,6 +14,7 @@ server receives ready-to-send 16-bit mono PCM. Other commands: --status --list -
 import argparse
 import os
 import sys
+import time
 
 import s2kcore as core
 from s2kclient import S2KClient, S2KError
@@ -220,7 +221,8 @@ def send(c, a):
         say('Already in the S2000 RAM from this run: ' + ', '.join(f'{d["name"]!r} (slot {d["slot"]})' for d in err['done']))
     if err.get('not_completed'):
         say('Not completed: ' + ', '.join(err['not_completed']))
-    say(f'The transcript and the audio sent are kept on the server: s2ksend --fetch-job {final["id"]}')
+    if final['state'] == 'failed':
+        say(f'The transcript and the audio sent are kept on the server: s2ksend --fetch-job {final["id"]}')
     if err.get('code') in ('needs_attention', 'list_mismatch') or (err.get('code') == 'send_failed' and c.status()['bus']['state'] == 'needs_attention'):
         say('Something may have been written and the S2000 may still be in SCSI-MIDI mode. Switch SCSI-MIDI off on it if')
         say('it is silent, power-cycle the S2000 and the Pi, then run: s2ksend --recover')
@@ -263,8 +265,11 @@ def main(argv=None):
                 f.write(wav)
             say(f'saved slot {a.download} {info["name"]!r} ({info["frames"]} frames, {info["rate"]} Hz) to {a.wavs[0]}')
         elif a.jobs:
+            if a.wavs:
+                ap.error('--jobs takes no file names')
             for j in c.jobs():
-                say(f'{j["id"]}  {j["state"]:9s}  {j["samples"]} sample(s)  created {j["created"]}')
+                created = time.strftime('%d/%m/%Y %H:%M:%S', time.localtime(j['created']))
+                say(f'{j["id"]}  {j["state"]:9s}  {j["samples"]} sample(s)  created {created}')
         elif a.fetch_job:
             if len(a.wavs) > 1:
                 ap.error('--fetch-job ID takes at most one folder name')

@@ -26,6 +26,7 @@ import json
 import os
 import queue
 import re
+import shutil
 import signal
 import sys
 import threading
@@ -443,13 +444,18 @@ def job_files(h, jid, query):
 def job_file(h, jid, name, query):
     path = _job_dir(h, jid)
     name = urllib.parse.unquote(name)
-    if name not in os.listdir(path) or not os.path.isfile(os.path.join(path, name)):
+    full = os.path.join(path, name)
+    if '/' in name or name in ('.', '..') or not os.path.isfile(full):
         raise ApiError(404, 'no_such_file', f'job {jid} has no file {name!r}')
-    with open(os.path.join(path, name), 'rb') as f:
-        data = f.read()
     ctype = {'.wav': 'audio/wav', '.log': 'text/plain; charset=utf-8'}.get(os.path.splitext(name)[1],
                                                                           'application/octet-stream')
-    h._send(200, data, ctype)
+    with open(full, 'rb') as f:                     # streamed: audio files can be several MB on a Pi
+        h.send_response(200)
+        h.send_header('Content-Type', ctype)
+        h.send_header('Content-Length', str(os.fstat(f.fileno()).st_size))
+        h.send_header('Access-Control-Allow-Origin', '*')
+        h.end_headers()
+        shutil.copyfileobj(f, h.wfile)
 
 
 @route('PUT', r'/v1/jobs/([\w-]+)/samples/(\d+)')
