@@ -22,6 +22,7 @@ Scope is sending samples to the S2000 and reading them back. Programs, keygroups
 * **Verified on hardware** (Pi 3 Model B, PiSCSI, S2000): mono and stereo sends at 44.1 kHz with byte-for-byte read-back, batches
   from a client on another computer, `--status`, `--list`, `--check`, `--download`, `--pairs`, and the busy / not-found error paths.
 * **Simulator-tested only**: 22.05 kHz sends, `--block 32768`, PiSCSI setup retention, large batches, the systemd service.
+  [docs/hardware-test-plan.md](docs/hardware-test-plan.md) covers these.
 * The simulated S2000 is built from our understanding of the protocol. Passing tests show the command sequence is self-consistent,
   not that a real S2000 accepts it; every hardware result was confirmed by reading back from the sampler.
 
@@ -69,13 +70,17 @@ sox is needed only for audio that is not already 16-bit WAV at 44.1 or 22.05 kHz
     s2ksend --download 6 kick_back.wav                    # read-only: save a sample as WAV
     s2ksend --pairs                                       # read-only: stereo -L/-R pairs and their partner fields
     s2ksend --rehearse-only kick.wav loop.wav             # plan and rehearse locally, server not contacted
+    s2ksend --jobs                                        # recent send jobs
+    s2ksend --fetch-job ID [FOLDER]                       # save a job's transcript and audio sent (after a failure, say)
 Every send: load and plan locally -> upload -> server rehearsal -> you confirm -> transfer with live progress -> verify.
 
 ### Names, rates and stereo
 * Names come from the file names (12 characters from `0-9`, space, `A-Z`, `#`, `+`, `-`, `.`; duplicates get a number, e.g. KICK,
   KICK2). `--name` is for a single file.
-* `--rate auto` (default): sources at or below 22.05 kHz go as 22.05 kHz, anything above as 44.1 kHz. `--rate 44100|22050` forces one
-  (sox resamples with dither off, so conversions are repeatable).
+* `--rate auto` (default): resample to one of the S2000's own rates (sources at or below 22.05 kHz to 22.05 kHz, anything above
+  to 44.1 kHz). `--rate native` keeps the source rate, from 4 kHz to 65.535 kHz, with no resampling: the header retunes it to play
+  at the right pitch (simulator-tested only). `--rate HZ` resamples to that rate. sox resamples with dither off, so conversions are
+  repeatable.
 * A stereo WAV becomes two mono samples named the way the S2000 names its own pairs (name padded to 10 characters, then `-L` / `-R`
   as the last two of 12), sent L then R. **The S2000 links them as a stereo pair by itself** when the R arrives; the job checks both
   partner fields afterwards and reports `linked` or `NOT linked`. `--mono-mix` sends one mono sample instead.
@@ -101,8 +106,8 @@ After an error that may have written, the server leaves PiSCSI stopped and refus
 S2000 if it is silent, power-cycle the S2000 and the Pi, then run `s2ksend --recover`. Nothing is retried automatically.
 
 A failed read-back comparison is different: the transfer completed, the bus is fine and PiSCSI restarts normally; the output says how
-to inspect the sample read-only. The exact audio sent, a transcript of every SCSI command and, on a mismatch, the expected and
-read-back audio are kept per job under the server's `--data-dir`.
+to inspect the sample read-only. The exact audio sent, a timed transcript of every SCSI command and, on a mismatch, the expected
+and read-back audio are kept per job under the server's `--data-dir`; `s2ksend --fetch-job ID` copies them to the client.
 
 Samples live only in the S2000's RAM: save them to disk on the sampler to keep them.
 
@@ -112,7 +117,7 @@ Samples live only in the S2000's RAM: save them to disk on the sampler to keep t
 | `needs_attention` | See above: power-cycle both, then `s2ksend --recover`. |
 | `already on the S2000: NAME` | Name clash. Use `--name` or delete the sample on the S2000. |
 | `verify_failed` | Transfer completed, bus healthy. Inspect with `s2ksend --check SLOT file`. |
-| `the sample list after the batch is not what was expected` | Samples were sent and verified but the S2000's list changed unexpectedly. Power-cycle, `--recover`, then `--list`. |
+| `list_mismatch` | Samples were sent and verified but the S2000's list changed unexpectedly. Power-cycle, `--recover`, then `--list`. |
 | `bus helper ... not found` | Run `sudo make install` (or `make` in a checkout). |
 | Emulated disks missing after a job | Wait `--keep-bus` seconds, then check `--status` and `--piscsi`. |
 | No answer from the S2000 | Another initiator on ID 7, wrong `--target`, SCSI-MIDI left on after a failure, or the board is not in initiator mode. |

@@ -45,8 +45,8 @@ class Surprise(core.MockS2000):
             self.programs.append(core.encode_name('SURPRISE'))
 try:
     run(lambda s: core.op_send(s, items[:2], 60), Surprise(samples=['A'], free_words=1_000_000))
-    raise SystemExit('expected SendError')
-except core.SendError as e:
+    raise SystemExit('expected ListMismatch')
+except core.ListMismatch as e:
     assert not isinstance(e, core.VerifyError) and 'sample list after the batch' in str(e)
 # ...and, since samples were written, the bus needs attention rather than going back to idle
 sbus = core.BusManager(mock=Surprise(samples=['A'], free_words=1_000_000), keep_bus=0)

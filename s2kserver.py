@@ -26,6 +26,7 @@ import json
 import os
 import queue
 import re
+import shutil
 import signal
 import sys
 import threading
@@ -134,8 +135,8 @@ class JobManager:
             if name in seen:
                 raise ApiError(400, 'duplicate_name', f'name {name!r} appears twice in the job')
             seen.add(name)
-            if rate not in core.RATES:
-                raise ApiError(400, 'bad_rate', f'sample {i}: rate must be one of {list(core.RATES)}')
+            if not core.valid_rate(rate):
+                raise ApiError(400, 'bad_rate', f'sample {i}: rate must be an integer from {core.MIN_RATE} to {core.MAX_RATE}')
             if not isinstance(frames, int) or frames < 1:
                 raise ApiError(400, 'bad_frames', f'sample {i}: frames must be a positive integer')
             if sroot is not None and (not isinstance(sroot, int) or not 0 <= sroot < 128):
@@ -244,6 +245,8 @@ class JobManager:
                     return self._fail(job, 'needs_attention', str(e))
                 except VerifyError as e:
                     return self._fail(job, 'verify_failed', str(e))
+                except core.ListMismatch as e:
+                    return self._fail(job, 'list_mismatch', str(e))
                 except SendError as e:
                     return self._fail(job, 'send_failed', str(e))
         self._fail(job, 'busy', 'the bus stayed busy for two minutes')
@@ -419,6 +422,40 @@ def job_create(h, query):
 def job_get(h, jid, query):
     since = int((query.get('since') or ['0'])[0])
     h._json(200, h.jobs.get(jid).snapshot(since))
+
+
+def _job_dir(h, jid):
+    """A job's evidence folder. Also works for jobs no longer held in memory (older ones, or before a restart)."""
+    path = os.path.join(h.jobs.data_dir, 'jobs', jid)          # jid is [\w-]+ (route), so it cannot leave jobs/
+    if not os.path.isdir(path):
+        raise ApiError(404, 'no_such_job', f'no files for job {jid}')
+    return path
+
+
+@route('GET', r'/v1/jobs/([\w-]+)/files')
+def job_files(h, jid, query):
+    path = _job_dir(h, jid)
+    files = [{'name': n, 'bytes': os.path.getsize(os.path.join(path, n))}
+             for n in sorted(os.listdir(path)) if os.path.isfile(os.path.join(path, n))]
+    h._json(200, {'id': jid, 'files': files})
+
+
+@route('GET', r'/v1/jobs/([\w-]+)/files/([^/]+)')
+def job_file(h, jid, name, query):
+    path = _job_dir(h, jid)
+    name = urllib.parse.unquote(name)
+    full = os.path.join(path, name)
+    if '/' in name or name in ('.', '..') or not os.path.isfile(full):
+        raise ApiError(404, 'no_such_file', f'job {jid} has no file {name!r}')
+    ctype = {'.wav': 'audio/wav', '.log': 'text/plain; charset=utf-8'}.get(os.path.splitext(name)[1],
+                                                                          'application/octet-stream')
+    with open(full, 'rb') as f:                     # streamed: audio files can be several MB on a Pi
+        h.send_response(200)
+        h.send_header('Content-Type', ctype)
+        h.send_header('Content-Length', str(os.fstat(f.fileno()).st_size))
+        h.send_header('Access-Control-Allow-Origin', '*')
+        h.end_headers()
+        shutil.copyfileobj(f, h.wfile)
 
 
 @route('PUT', r'/v1/jobs/([\w-]+)/samples/(\d+)')
