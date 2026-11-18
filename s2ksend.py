@@ -190,7 +190,9 @@ def send(c, a):
             say('Cancelled; nothing sent.')
             return 1
     started = c.start(snap['id'])
-    final = c.wait(snap['id'], on_log=say, since=started['next'])         # (the rehearsal line was already shown)
+    for line in started['log']:                       # anything the worker logged before the start reply
+        say(line['msg'])
+    final = c.wait(snap['id'], on_log=say, since=started['next'])
     if final['state'] == 'done':
         r = final['result']
         say(f'All done. {len(r["samples"])} sample(s), {r["audio_bytes"] / 1000:.0f} KB of audio in {r["elapsed_s"]} s '

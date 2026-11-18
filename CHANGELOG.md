@@ -9,12 +9,22 @@ All notable changes to this project are recorded here. The format follows
 - Python packaging (`pyproject.toml`): `pip install` gives the `s2ksend` and `s2kserver` commands.
 - `make install` puts the `s2kexec` bus helper on `PATH`; the server finds it there when installed as a package.
 - MIT licence for the project's own code.
-- GitHub Actions CI: tests on Python 3.9 to 3.13, `s2kexec` build, package build.
+- GitHub Actions CI: tests on Python 3.13 and 3.14, `s2kexec` build, package build.
 - This changelog.
 
 ### Changed
+- Requires Python 3.13 or later (current Raspberry Pi OS); older releases are not supported.
 - `run_tests.sh` exits non-zero when a test fails.
 - The systemd unit runs the installed `s2kserver` command.
+
+### Fixed
+- Sample memory is counted in even numbers of words, as the S2000 allocates it, so a batch that does not fit is refused
+  before anything is written instead of failing part-way.
+- A sample list that is wrong after a batch has written now leaves the bus in `needs_attention` instead of idle.
+- The job log no longer skips lines logged just after a job starts, and the CLI always shows why a job failed.
+- Stereo pairs are reported as linked by the same rule as `--pairs` (both partner fields set), not only when their
+  table entries are adjacent.
+- A read no longer waits up to 60 s when the keep-bus restart timer fires during a send.
 
 ### Removed
 - `tests/test_physical.py`, which targeted the pre-0.7 single-file tool. Its 32 KB block case moved to `tests/test_server.py`.

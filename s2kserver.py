@@ -431,8 +431,9 @@ def job_put(h, jid, index, query):
 @route('POST', r'/v1/jobs/([\w-]+)/start')
 def job_start(h, jid, query):
     job = h.jobs.get(jid)
+    since = len(job.log)                 # taken before queueing, so lines the worker logs at once are not skipped
     h.jobs.start(job)
-    h._json(202, job.snapshot(len(job.log)))
+    h._json(202, job.snapshot(since))
 
 
 @route('DELETE', r'/v1/jobs/([\w-]+)')

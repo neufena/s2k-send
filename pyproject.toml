@@ -9,7 +9,7 @@ description = "Send samples to an Akai S2000 over SCSI from a Raspberry Pi with 
 readme = "README.md"
 license = "MIT"
 license-files = ["LICENSE"]
-requires-python = ">=3.9"
+requires-python = ">=3.13"
 authors = [{ name = "John Mitchell" }]
 keywords = ["akai", "s2000", "sampler", "scsi", "piscsi", "raspberry-pi"]
 classifiers = [

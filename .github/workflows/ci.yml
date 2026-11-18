@@ -10,15 +10,11 @@ permissions:
 
 jobs:
   test:
-    runs-on: ${{ matrix.os }}
+    runs-on: ubuntu-latest
     strategy:
       fail-fast: false
       matrix:
-        python: ["3.10", "3.11", "3.12", "3.13"]
-        os: [ubuntu-latest]
-        include:
-          - python: "3.9"          # not built for newer runners; kept for Pi OS Bullseye
-            os: ubuntu-24.04
+        python: ["3.13", "3.14"]    # 3.13 is current Raspberry Pi OS (Trixie)
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-python@v5

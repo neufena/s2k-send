@@ -28,6 +28,7 @@ Scope is sending samples to the S2000 and reading them back. Programs, keygroups
 See [CHANGELOG.md](CHANGELOG.md) for the version history.
 
 ## Hardware
+* Current Raspberry Pi OS (Trixie, Python 3.13). Older releases are not supported.
 * A PiSCSI board that supports initiator mode (FULLSPEC board, or direct wiring without transceivers). The S2000 Bridge project
   page says it was tested with a Raspberry Pi 3 and a RaSCSI v2.3B; other Pi models and boards are untested here.
 * S2000 at SCSI ID 6. The Pi becomes the initiator, default ID 7, so **power off or disconnect any other initiator using ID 7**
@@ -49,7 +50,7 @@ To start it at boot, follow the header of [s2k-server.service](s2k-server.servic
 Options: `--target 6 --initiator 7 --data-dir DIR --helper PATH --no-manage-piscsi --keep-bus SECS --restore-piscsi exact|attach-only|off`.
 `--mock` runs against a simulated S2000, with no hardware and no root, for developing clients.
 
-### Client (any computer with Python 3.9 or later)
+### Client (any computer with Python 3.13 or later)
     pipx install git+https://github.com/neufena/s2k-send  # or: pip install . from a checkout
 sox is needed only for audio that is not already 16-bit WAV at 44.1 or 22.05 kHz.
 
@@ -111,6 +112,7 @@ Samples live only in the S2000's RAM: save them to disk on the sampler to keep t
 | `needs_attention` | See above: power-cycle both, then `s2ksend --recover`. |
 | `already on the S2000: NAME` | Name clash. Use `--name` or delete the sample on the S2000. |
 | `verify_failed` | Transfer completed, bus healthy. Inspect with `s2ksend --check SLOT file`. |
+| `the sample list after the batch is not what was expected` | Samples were sent and verified but the S2000's list changed unexpectedly. Power-cycle, `--recover`, then `--list`. |
 | `bus helper ... not found` | Run `sudo make install` (or `make` in a checkout). |
 | Emulated disks missing after a job | Wait `--keep-bus` seconds, then check `--status` and `--piscsi`. |
 | No answer from the S2000 | Another initiator on ID 7, wrong `--target`, SCSI-MIDI left on after a failure, or the board is not in initiator mode. |
@@ -127,7 +129,7 @@ Samples live only in the S2000's RAM: save them to disk on the sampler to keep t
     ./run_tests.sh                                        # simulator only, no hardware; needs sox
 `tests/parity.py` compares 11 wire frames byte-for-byte with output from the reference C++ (`tests/parity.reference.out`);
 `test_server.py` runs the server, client library and CLI against a simulated S2000, including the real bus-helper protocol through
-`tests/fake_s2kexec.py`. CI runs the tests on Python 3.9 to 3.13, builds `s2kexec` and builds the package.
+`tests/fake_s2kexec.py`. CI runs the tests on Python 3.13 and 3.14, builds `s2kexec` and builds the package.
 
 New SCSI behaviour belongs in `Session` or an `op_*` function in `s2kcore.py`, mirrored in `MockS2000` so rehearsals and tests stay
 honest. New endpoints go in `s2kserver.py`, then `s2kclient.py`, then the CLI, then API.md.
