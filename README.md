@@ -112,6 +112,7 @@ Samples live only in the S2000's RAM: save them to disk on the sampler to keep t
 | `needs_attention` | See above: power-cycle both, then `s2ksend --recover`. |
 | `already on the S2000: NAME` | Name clash. Use `--name` or delete the sample on the S2000. |
 | `verify_failed` | Transfer completed, bus healthy. Inspect with `s2ksend --check SLOT file`. |
+| `the sample list after the batch is not what was expected` | Samples were sent and verified but the S2000's list changed unexpectedly. Power-cycle, `--recover`, then `--list`. |
 | `bus helper ... not found` | Run `sudo make install` (or `make` in a checkout). |
 | Emulated disks missing after a job | Wait `--keep-bus` seconds, then check `--status` and `--piscsi`. |
 | No answer from the S2000 | Another initiator on ID 7, wrong `--target`, SCSI-MIDI left on after a failure, or the board is not in initiator mode. |

@@ -100,8 +100,22 @@ with bus.session() as sess:                       # arrives while the "timer" is
     assert core.op_inventory(sess)['samples']
 assert 0.3 < time.monotonic() - t0 < 5, time.monotonic() - t0
 th.join()
-# the keep-bus timer firing while a real operation holds the bus gives up without making readers wait
+# the keep-bus timer firing while a real operation holds the bus never flags a restart, so readers are not made to wait
+class Watch:
+    def __init__(self, lock): self.lock, self.flags = lock, []
+    def acquire(self, *a, **k):
+        self.flags.append(bus._restoring)
+        return self.lock.acquire(*a, **k)
+    def release(self): self.lock.release()
+bus.lock = Watch(bus.lock)
 with bus.session():
+    bus.lock.flags.clear()
     bus._timed_restart()
-    assert bus._restoring is False
+    assert bus.lock.flags == [False] and bus._restoring is False, bus.lock.flags
+    t0 = time.monotonic()
+    try:
+        with bus.session():
+            raise SystemExit('expected Busy')
+    except core.Busy:
+        assert time.monotonic() - t0 < 1.0
 print('test_batch_mode OK')

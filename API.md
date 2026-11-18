@@ -72,6 +72,9 @@ simulated S2000), then start it.
 * Pass `since=<next from the previous reply>` to receive only new log lines.
 * `error.code` is one of `send_failed`, `verify_failed`, `needs_attention`, `rehearsal_failed`, `busy`, `internal_error`.
   `verify_failed` means the transfer completed and the bus is healthy, but a read-back comparison failed.
+  `send_failed` with the message "the sample list after the batch is not what was expected" means every sample was
+  sent and verified, but the S2000's list afterwards did not match; its state is uncertain, so the bus is left in
+  `needs_attention`. Do not retry: power-cycle, recover, and check the list.
 * After `failed`, `error.done` lists samples already in the S2000's RAM (with slots) and `not_completed` those that are
   not (the one being sent when it stopped may be partly there).
 

@@ -1143,7 +1143,9 @@ def op_send(sess, items, root, verify=True, progress=lambda m: None, done=None, 
         if prev is not None and it.name.endswith('-R') and prev.name.endswith('-L') and it.name[:-1] == prev.name[:-1]:
             fr = int.from_bytes(sess.last_header[136:138], 'little')
             fl = int.from_bytes(sess.read_header(done[-2]['slot'])[136:138], 'little')
-            linked = 0xFFFF not in (fl, fr)               # the same rule as op_pairs
+            # Both were just sent with no partner, so any value now set came from the S2000 linking this pair.
+            # Adjacency (a gap of 12) is not required: the table can have holes, as op_pairs reports.
+            linked = 0xFFFF not in (fl, fr) and fl != fr
             pairs.append({'left': prev.name, 'right': it.name, 'left_slot': done[-2]['slot'], 'right_slot': idx,
                           'linked': linked, 'left_partner': fl, 'right_partner': fr})
             progress(f'stereo pair {it.name[:-2].strip()!r}: '
@@ -1271,9 +1273,10 @@ class BusManager:
         if self.state == 'needs_attention':
             raise NeedsAttention('a previous send left the bus in an uncertain state: power-cycle the S2000 '
                                  'and the Pi, then POST /v1/recover')
-        if not self.lock.acquire(blocking=False):
+        if not self.lock.acquire(timeout=0.2):
             # A short PiSCSI restart by the keep-bus timer is not a real operation: wait for it. A running
-            # operation (a send job can take minutes) is reported as busy at once.
+            # operation (a send job can take minutes) is reported as busy at once. (The short first wait covers
+            # the moment between the timer taking the lock and setting _restoring.)
             if not (self._restoring and self.lock.acquire(timeout=60)):
                 raise Busy('another operation is using the bus')
         self.state = 'busy'
