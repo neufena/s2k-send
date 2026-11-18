@@ -190,7 +190,8 @@ def send(c, a):
             say('Cancelled; nothing sent.')
             return 1
     started = c.start(snap['id'])
-    final = c.wait(snap['id'], on_log=say, since=started['next'])         # (the rehearsal line was already shown)
+    shown = []
+    final = c.wait(snap['id'], on_log=lambda m: (shown.append(m), say(m)), since=started['next'])
     if final['state'] == 'done':
         r = final['result']
         say(f'All done. {len(r["samples"])} sample(s), {r["audio_bytes"] / 1000:.0f} KB of audio in {r["elapsed_s"]} s '
@@ -199,9 +200,11 @@ def send(c, a):
             + (f'; verify reads {r["verify_kbps"]} KB/s' if r['verify_kbps'] else ''))
         say('Slots: ' + ', '.join(f'{s["name"].strip()}={s["slot"]}' for s in r['samples']))
         return 0
-    err = final['error'] or {}                                  # the server already streamed 'FAILED (code): message'
+    err = final['error'] or {}
     if not err:
         say(f'job {final["state"]}')
+    elif not any(m.startswith('FAILED (') for m in shown):
+        say(f'FAILED ({err.get("code")}): {err.get("message")}')
     if err.get('done'):
         say('Already in the S2000 RAM from this run: ' + ', '.join(f'{d["name"]!r} (slot {d["slot"]})' for d in err['done']))
     if err.get('not_completed'):
