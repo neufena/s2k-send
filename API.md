@@ -99,6 +99,8 @@ simulated S2000), then start it.
    advertised a different size), `needs_attention` or `busy`.
 
 Every job (send or download) has `kind` and `slot` (`null` for sends); `GET /v1/jobs` lists both kinds.
+The server keeps the last 50 finished jobs in memory (unfinished ones are never dropped). When a download job is dropped,
+its folder on the Pi is deleted too, so fetch its audio soon after it finishes; send evidence is kept.
 
 **SSE** (`/events`): events `log` (`{n, t, msg}`), `progress`, `state` (`{state}`), then `end` (`{result, error}`),
 plus `: keep-alive` comments.

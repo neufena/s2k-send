@@ -88,6 +88,7 @@ class S2KClient:
         return self._json('POST', f'/v1/samples/{int(slot)}/download')
 
     def download_audio(self, job_id, fmt='pcm'):
+        """A finished download's audio: raw PCM by default (as sample_audio()), or fmt='wav'."""
         return self._request('GET', f'/v1/jobs/{job_id}/audio?format={fmt}')[2]
 
     def download(self, slot, fmt='pcm', on_log=None, on_progress=None):

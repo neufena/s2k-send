@@ -163,8 +163,11 @@ class JobManager:
         job = make(jid, os.path.join(self.data_dir, 'jobs', jid))
         with self.lock:
             self.jobs[jid] = job
-            while len(self.jobs) > KEEP_JOBS:
-                self.jobs.popitem(last=False)
+            finished = [j for j in self.jobs.values() if j.state in TERMINAL]
+            for old in finished[:max(0, len(self.jobs) - KEEP_JOBS)]:        # never drop a job still in progress
+                del self.jobs[old.id]
+                if old.kind == 'download':                     # a copy of audio still on the S2000: free the SD card
+                    shutil.rmtree(old.dir, ignore_errors=True)
         return job
 
     def get(self, jid):
@@ -262,7 +265,7 @@ class JobManager:
                     time.sleep(0.5)
                 except NeedsAttention as e:
                     return self._fail(job, 'needs_attention', str(e))
-                except LookupError as e:
+                except core.NoSuchSample as e:
                     return self._fail(job, 'not_found', str(e))
                 except VerifyError as e:
                     return self._fail(job, 'verify_failed', str(e))
@@ -277,7 +280,7 @@ class JobManager:
         job.add_log(f'reading sample slot {job.slot}')
         info, pcm = core.op_audio(sess, job.slot)
         elapsed = time.monotonic() - t0
-        path = os.path.join(job.dir, core.safe_stem(info['name']) + '.wav')
+        path = os.path.join(job.dir, (core.safe_stem(info['name']) or f'slot{job.slot}') + '.wav')
         core.save_wav(path, pcm, info['rate'])
         job.audio_file = path
         job.add_log(f'read {info["name"]!r}: {info["frames"]} frames at {info["rate"]} Hz, {len(pcm) / 1000:.0f} KB '
@@ -419,6 +422,10 @@ def sample(h, slot, query):
 @route('GET', r'/v1/samples/(\d+)/audio')
 def sample_audio(h, slot, query):
     info, pcm = h.read_op(lambda s: core.op_audio(s, int(slot)), 'audio')
+    _send_audio(h, info, pcm, query)
+
+
+def _send_audio(h, info, pcm, query):
     fmt = (query.get('format') or ['wav'])[0]
     headers = {'X-S2K-Name': info['name'], 'X-S2K-Rate': info['rate'], 'X-S2K-Frames': info['frames'],
                'X-S2K-Root': info['root']}
@@ -443,19 +450,9 @@ def job_audio(h, jid, query):
         raise ApiError(400, 'not_a_download', f'job {jid} is a {job.kind} job')
     if job.state != 'done' or not job.audio_file:
         raise ApiError(409, 'wrong_state', f'the download is {job.state}; the audio is available once it is done')
-    fmt = (query.get('format') or ['wav'])[0]
-    if fmt not in ('wav', 'pcm'):
-        raise ApiError(400, 'bad_format', 'format must be wav or pcm')
-    r = job.result
-    headers = {'X-S2K-Name': r['name'], 'X-S2K-Rate': r['rate'], 'X-S2K-Frames': r['frames'], 'X-S2K-Root': r['root']}
-    with open(job.audio_file, 'rb') as f:
-        data = f.read()
-    if fmt == 'pcm':
-        with wave.open(job.audio_file, 'rb') as w:
-            data = w.readframes(w.getnframes())
-        h._send(200, data, 'application/octet-stream', headers)
-    else:
-        h._send(200, data, 'audio/wav', headers)
+    with wave.open(job.audio_file, 'rb') as w:
+        pcm = w.readframes(w.getnframes())
+    _send_audio(h, job.result, pcm, query)
 
 
 @route('GET', r'/v1/pairs')

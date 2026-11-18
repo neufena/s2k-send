@@ -59,7 +59,7 @@ def build_parser():
     ap.add_argument('--check', type=int, metavar='SLOT',
                     help='READ-ONLY: show the header of the sample in SLOT; with a WAV, also compare the audio')
     ap.add_argument('--download', type=int, metavar='SLOT', help='READ-ONLY: save the sample in SLOT as WAV (give the file name)')
-    ap.add_argument('--jobs', action='store_true', help='list recent send jobs')
+    ap.add_argument('--jobs', action='store_true', help='list recent send and download jobs')
     ap.add_argument('--fetch-job', metavar='ID',
                     help="save a job's evidence (audio sent, transcript, mismatch dumps) into a folder (default s2k-job-ID)")
     ap.add_argument('--recover', action='store_true',
@@ -293,7 +293,8 @@ def main(argv=None):
                 ap.error('--jobs takes no file names')
             for j in c.jobs():
                 created = time.strftime('%d/%m/%Y %H:%M:%S', time.localtime(j['created']))
-                say(f'{j["id"]}  {j["state"]:9s}  {j["samples"]} sample(s)  created {created}')
+                what = f'{j["samples"]} sample(s)' if j.get('kind', 'send') == 'send' else 'download'
+                say(f'{j["id"]}  {j.get("kind", "send"):8s}  {j["state"]:9s}  {what:12s}  created {created}')
         elif a.fetch_job:
             if len(a.wavs) > 1:
                 ap.error('--fetch-job ID takes at most one folder name')
