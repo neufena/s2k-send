@@ -14,6 +14,9 @@ All notable changes to this project are recorded here. The format follows
 - `GET /v1/jobs/{id}/files[/{name}]` and `s2ksend --jobs` / `--fetch-job ID`: fetch a job's transcript, the audio sent and
   any mismatch dumps from a client; a failed send prints the command.
 - Each transcript line records when the command ran (`t=`) and how long it took (`dt=`).
+- Any sample rate from 4000 to 65535 Hz, sent without resampling (`--rate native`, or any `rate` in the API): the header's
+  bandwidth and pitch offset make it play at the right pitch, as AKAISDS does over MIDI. Downloads accept any such rate.
+  `GET /v1/samples/{slot}` reports the pitch offset as `tune`.
 - Error code `list_mismatch` for a wrong sample list after a batch (reported as `verify_failed` in 0.8.0).
 
 ### Changed
@@ -31,6 +34,7 @@ All notable changes to this project are recorded here. The format follows
 - A read no longer waits up to 60 s when the keep-bus restart timer fires during a send.
 
 ### Removed
+- `s2kcore.RATES`: use `s2kcore.valid_rate()`.
 - `tests/test_physical.py`, which targeted the pre-0.7 single-file tool. Its 32 KB block case moved to `tests/test_server.py`.
 
 ## [0.8.0] - 2026-11-18

@@ -5,7 +5,7 @@
     print(c.samples())                                   # slots, names, free memory
     job = c.send([{'name': 'KICK', 'rate': 44100, 'pcm': pcm_bytes}], root=60, on_log=print)
 
-`pcm` is raw 16-bit signed little-endian MONO audio at `rate` (22050 or 44100). Names are 12 characters from
+`pcm` is raw 16-bit signed little-endian MONO audio at `rate` (any integer from 4000 to 65535 Hz). Names are 12 characters from
 0-9 space A-Z # + - . (the client chooses them; the server rejects invalid or duplicate names).
 """
 import json

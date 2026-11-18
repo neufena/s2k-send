@@ -91,6 +91,16 @@ err(lambda: c.job_file(final['id'], '../../../etc/passwd'), 'no_such_file', 404)
 err(lambda: c.job_file(final['id'], 'nothing.wav'), 'no_such_file', 404)
 err(lambda: c.job_files('no-such-job'), 'no_such_job', 404)
 
+# any rate the header can hold: sent as is, retuned by the pitch offset, downloaded at the same rate
+odd = c.send([core.Item('RATE32K', bytes(range(256)) * 50, 32000, 'r', False)])
+assert odd['state'] == 'done', odd
+slot32 = odd['result']['samples'][0]['slot']
+info32 = c.sample(slot32)
+assert (info32['rate'], info32['bandwidth']) == (32000, 1) and abs(info32['tune'] - core.rate_fields(32000)[1]) < 1 / 256, info32
+meta, wav32 = c.sample_audio(slot32, 'wav')
+with wave.open(io.BytesIO(wav32)) as w:
+    assert w.getframerate() == 32000 and w.readframes(w.getnframes()) == bytes(range(256)) * 50
+
 # a wrong sample list after the batch has its own error code, and the bus is left needing attention
 class Surprise(core.MockS2000):
     def _sysex(self, f):
@@ -110,7 +120,8 @@ def post(obj): return c._json('POST', '/v1/jobs', obj)
 err(lambda: post({'samples': [{'name': 'bad/name', 'rate': 44100, 'frames': 10}]}), 'invalid_name', 400)
 err(lambda: post({'samples': [{'name': 'THIRTEEN CHARS', 'rate': 44100, 'frames': 10}]}), 'invalid_name', 400)
 err(lambda: post({'samples': [{'name': 'A', 'rate': 44100, 'frames': 10}, {'name': 'A', 'rate': 44100, 'frames': 10}]}), 'duplicate_name', 400)
-err(lambda: post({'samples': [{'name': 'A', 'rate': 48000, 'frames': 10}]}), 'bad_rate', 400)
+for bad in (3999, 65536, '44100', 44100.0):
+    err(lambda: post({'samples': [{'name': 'A', 'rate': bad, 'frames': 10}]}), 'bad_rate', 400)
 err(lambda: post({'samples': [{'name': 'A', 'rate': 44100, 'frames': 0}]}), 'bad_frames', 400)
 err(lambda: post(big(root=200)), 'bad_root', 400)
 err(lambda: post(big(block=1000)), 'bad_block', 400)
@@ -224,6 +235,11 @@ rc, out = cli('--check', '1', os.path.join(tmp, 'pad2.wav'))
 assert rc == 0 and 'audio MATCHES the file byte-for-byte' in out and '22050 Hz' in out, out
 rc, out = cli('--download', '1', os.path.join(tmp, 'dl.wav')); assert rc == 0 and os.path.getsize(os.path.join(tmp, 'dl.wav')) > 44, out
 rc, out = cli('--pairs'); assert rc == 0, out
+rc, out = cli('--yes', '--rate', 'native', '--name', 'NAT32', t32 := mkwav('t32.wav', 1, 32000, 0.3))
+assert rc == 0 and 'audio verified byte-for-byte' in out, out
+slot = int(out.split("'NAT32' is in sample slot ")[1].split('.')[0])
+rc, out = cli('--check', str(slot), t32)
+assert rc == 0 and 'rate 32000 Hz' in out and 'pitch offset -5.55' in out and 'MATCHES the file byte-for-byte' in out, out
 rc, out = cli('--yes', k)                                   # KICK already exists on the simulated S2000
 assert rc == 1 and 'FAILED (send_failed)' in out and out.count('already on the S2000') == 1 and 'Not completed: KICK' in out, out
 failed_id = out.split('s2ksend --fetch-job ')[1].split()[0]               # the failure says how to fetch the evidence
