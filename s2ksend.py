@@ -48,6 +48,9 @@ def build_parser():
     ap.add_argument('--check', type=int, metavar='SLOT',
                     help='READ-ONLY: show the header of the sample in SLOT; with a WAV, also compare the audio')
     ap.add_argument('--download', type=int, metavar='SLOT', help='READ-ONLY: save the sample in SLOT as WAV (give the file name)')
+    ap.add_argument('--jobs', action='store_true', help='list recent send jobs')
+    ap.add_argument('--fetch-job', metavar='ID',
+                    help="save a job's evidence (audio sent, transcript, mismatch dumps) into a folder (default s2k-job-ID)")
     ap.add_argument('--recover', action='store_true',
                     help='after a failed send AND a power-cycle of the S2000 and the Pi: restart PiSCSI, accept work again')
     return ap
@@ -158,6 +161,15 @@ def show_pairs(c):
             f'field = 0x{rule["base"]:04x} + {rule["stride"]} x slot of the partner')
 
 
+def fetch_job(c, job_id, folder):
+    files = c.job_files(job_id)
+    os.makedirs(folder, exist_ok=True)
+    for f in files:
+        with open(os.path.join(folder, os.path.basename(f['name'])), 'wb') as out:
+            out.write(c.job_file(job_id, f['name']))
+    say(f'saved {len(files)} file(s) from job {job_id} into {folder}/: ' + ', '.join(f['name'] for f in files))
+
+
 # ------------------------------------------------------------------ sending
 def send(c, a):
     items = core.plan_items(a.wavs, a.mono_mix, a.rate, a.name)
@@ -208,7 +220,8 @@ def send(c, a):
         say('Already in the S2000 RAM from this run: ' + ', '.join(f'{d["name"]!r} (slot {d["slot"]})' for d in err['done']))
     if err.get('not_completed'):
         say('Not completed: ' + ', '.join(err['not_completed']))
-    if err.get('code') == 'needs_attention' or (err.get('code') == 'send_failed' and c.status()['bus']['state'] == 'needs_attention'):
+    say(f'The transcript and the audio sent are kept on the server: s2ksend --fetch-job {final["id"]}')
+    if err.get('code') in ('needs_attention', 'list_mismatch') or (err.get('code') == 'send_failed' and c.status()['bus']['state'] == 'needs_attention'):
         say('Something may have been written and the S2000 may still be in SCSI-MIDI mode. Switch SCSI-MIDI off on it if')
         say('it is silent, power-cycle the S2000 and the Pi, then run: s2ksend --recover')
     return 1
@@ -249,6 +262,13 @@ def main(argv=None):
             with open(a.wavs[0], 'wb') as f:
                 f.write(wav)
             say(f'saved slot {a.download} {info["name"]!r} ({info["frames"]} frames, {info["rate"]} Hz) to {a.wavs[0]}')
+        elif a.jobs:
+            for j in c.jobs():
+                say(f'{j["id"]}  {j["state"]:9s}  {j["samples"]} sample(s)  created {j["created"]}')
+        elif a.fetch_job:
+            if len(a.wavs) > 1:
+                ap.error('--fetch-job ID takes at most one folder name')
+            fetch_job(c, a.fetch_job, a.wavs[0] if a.wavs else f's2k-job-{a.fetch_job}')
         elif a.recover:
             r = c.recover()
             say(f'bus: {r["bus"]["state"]}; PiSCSI: {r["bus"]["piscsi"]}')

@@ -55,6 +55,10 @@ class SendError(Exception):
     pass
 
 
+class ListMismatch(SendError):
+    """Every sample was sent and verified, but the S2000's lists afterwards are not what was expected."""
+
+
 class VerifyError(SendError):
     """A read-back comparison failed. The bus itself is healthy and quiet."""
 
@@ -266,7 +270,8 @@ class Session:
 
     def __init__(self, bus, log, budget_s=600.0):
         self.bus, self.log = bus, log
-        self.deadline = time.monotonic() + budget_s
+        self.started = time.monotonic()
+        self.deadline = self.started + budget_s
         self.commands = 0
         self.mutated = False         # a write command has been dispatched
         self.block = PCM_BLOCK       # bytes per raw audio write
@@ -285,14 +290,16 @@ class Session:
             self.mutated = True
         want = len(data) if direction == 'out' else length
         self.commands += 1
+        t0 = time.monotonic()
         status, transferred, got = self.bus.execute(cdb, direction, data, length)
+        dt_ms = (time.monotonic() - t0) * 1000
         shown = got or data
         raw_pcm = cdb[0] in (12, 14) and cdb[5] == 0x80        # keep logs small: audio only as a prefix
         if raw_pcm and len(shown) > 20:
             shown_hex = shown[:20].hex() + f'...({len(shown)} bytes)'
         else:
             shown_hex = shown.hex()
-        self.log(f'{self.commands:5d} cdb={cdb.hex()} {direction:4s} want={want} '
+        self.log(f'{self.commands:5d} t={t0 - self.started:8.3f}s dt={dt_ms:7.1f}ms cdb={cdb.hex()} {direction:4s} want={want} '
                  f'status={status} xfer={transferred} data={shown_hex}')
         if status != 0:
             raise SendError(f'SCSI status 0x{status:02x} for cdb {cdb.hex()}')
@@ -1154,7 +1161,7 @@ def op_send(sess, items, root, verify=True, progress=lambda m: None, done=None, 
     after = sess.inventory()                    # one check of the whole batch
     want = [encode_name(i.name) for i in items]
     if after.programs != first.programs or after.samples != first.samples + want:
-        raise SendError('the sample list after the batch is not what was expected (programs changed, or the '
+        raise ListMismatch('the sample list after the batch is not what was expected (programs changed, or the '
                           'new samples are not exactly the ones sent, in order)')
     st = sess.stats
     elapsed = time.monotonic() - t0

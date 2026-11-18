@@ -244,6 +244,8 @@ class JobManager:
                     return self._fail(job, 'needs_attention', str(e))
                 except VerifyError as e:
                     return self._fail(job, 'verify_failed', str(e))
+                except core.ListMismatch as e:
+                    return self._fail(job, 'list_mismatch', str(e))
                 except SendError as e:
                     return self._fail(job, 'send_failed', str(e))
         self._fail(job, 'busy', 'the bus stayed busy for two minutes')
@@ -419,6 +421,35 @@ def job_create(h, query):
 def job_get(h, jid, query):
     since = int((query.get('since') or ['0'])[0])
     h._json(200, h.jobs.get(jid).snapshot(since))
+
+
+def _job_dir(h, jid):
+    """A job's evidence folder. Also works for jobs no longer held in memory (older ones, or before a restart)."""
+    path = os.path.join(h.jobs.data_dir, 'jobs', jid)          # jid is [\w-]+ (route), so it cannot leave jobs/
+    if not os.path.isdir(path):
+        raise ApiError(404, 'no_such_job', f'no files for job {jid}')
+    return path
+
+
+@route('GET', r'/v1/jobs/([\w-]+)/files')
+def job_files(h, jid, query):
+    path = _job_dir(h, jid)
+    files = [{'name': n, 'bytes': os.path.getsize(os.path.join(path, n))}
+             for n in sorted(os.listdir(path)) if os.path.isfile(os.path.join(path, n))]
+    h._json(200, {'id': jid, 'files': files})
+
+
+@route('GET', r'/v1/jobs/([\w-]+)/files/([^/]+)')
+def job_file(h, jid, name, query):
+    path = _job_dir(h, jid)
+    name = urllib.parse.unquote(name)
+    if name not in os.listdir(path) or not os.path.isfile(os.path.join(path, name)):
+        raise ApiError(404, 'no_such_file', f'job {jid} has no file {name!r}')
+    with open(os.path.join(path, name), 'rb') as f:
+        data = f.read()
+    ctype = {'.wav': 'audio/wav', '.log': 'text/plain; charset=utf-8'}.get(os.path.splitext(name)[1],
+                                                                          'application/octet-stream')
+    h._send(200, data, ctype)
 
 
 @route('PUT', r'/v1/jobs/([\w-]+)/samples/(\d+)')

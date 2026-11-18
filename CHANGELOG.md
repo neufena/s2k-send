@@ -11,6 +11,10 @@ All notable changes to this project are recorded here. The format follows
 - MIT licence for the project's own code.
 - GitHub Actions CI: tests on Python 3.13 and 3.14, `s2kexec` build, package build.
 - This changelog.
+- `GET /v1/jobs/{id}/files[/{name}]` and `s2ksend --jobs` / `--fetch-job ID`: fetch a job's transcript, the audio sent and
+  any mismatch dumps from a client; a failed send prints the command.
+- Each transcript line records when the command ran (`t=`) and how long it took (`dt=`).
+- Error code `list_mismatch` for a wrong sample list after a batch (reported as `verify_failed` in 0.8.0).
 
 ### Changed
 - Requires Python 3.13 or later (current Raspberry Pi OS); older releases are not supported.

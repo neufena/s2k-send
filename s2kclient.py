@@ -113,6 +113,13 @@ class S2KClient:
     def jobs(self):
         return self._json('GET', '/v1/jobs')['jobs']
 
+    def job_files(self, job_id):
+        """The evidence the server kept for a job: [{'name', 'bytes'}] (audio sent, transcript, mismatch dumps)."""
+        return self._json('GET', f'/v1/jobs/{job_id}/files')['files']
+
+    def job_file(self, job_id, name):
+        return self._request('GET', f'/v1/jobs/{job_id}/files/{urllib.parse.quote(name, safe="")}')[2]
+
     def wait(self, job_id, on_log=None, on_progress=None, interval=0.3, since=0, until=TERMINAL):
         """Poll until the job reaches one of the states in `until`; stream new log lines to on_log(str)."""
         last_progress = None

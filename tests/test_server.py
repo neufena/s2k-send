@@ -79,6 +79,30 @@ with wave.open(io.BytesIO(wavdata)) as w:
 # the server kept the evidence: exact audio sent + transcript
 jobdir = os.path.join(tmp, 'data', 'jobs', final['id'])
 assert sorted(os.listdir(jobdir)) == ['KICK.wav', 'LOOP_-L.wav', 'LOOP_-R.wav', 'PAD.wav', 'transcript.log'], os.listdir(jobdir)
+# ...and serves it, so a client can see what happened without logging in to the Pi
+files = c.job_files(final['id'])
+assert [f['name'] for f in files] == sorted(os.listdir(jobdir)) and all(f['bytes'] > 0 for f in files), files
+transcript = c.job_file(final['id'], 'transcript.log').decode()
+first = next(l for l in transcript.splitlines() if 'cdb=' in l)
+assert ' t=' in first and 'ms cdb=' in first, first                          # per-command timings
+with wave.open(io.BytesIO(c.job_file(final['id'], 'KICK.wav'))) as w:
+    assert w.getframerate() == 44100
+err(lambda: c.job_file(final['id'], '../../../etc/passwd'), 'no_such_file', 404)
+err(lambda: c.job_file(final['id'], 'nothing.wav'), 'no_such_file', 404)
+err(lambda: c.job_files('no-such-job'), 'no_such_job', 404)
+
+# a wrong sample list after the batch has its own error code, and the bus is left needing attention
+class Surprise(core.MockS2000):
+    def _sysex(self, f):
+        super()._sysex(f)
+        if f[3] == 0x34 and not self.programs:
+            self.programs.append(core.encode_name('SURPRISE'))
+sbus = core.BusManager(mock=Surprise(samples=['A'], free_words=1_000_000), keep_bus=0)
+ssrv, surl = start(sbus)
+bad = S2KClient(surl).send([core.Item('ONE', bytes(2000), 44100, 'o', False)])
+assert bad['state'] == 'failed' and bad['error']['code'] == 'list_mismatch', bad
+assert S2KClient(surl).status()['bus']['state'] == 'needs_attention'
+ssrv.shutdown()
 
 # ------------------------------------------------------------------ validation errors
 big = lambda **kw: dict({'samples': [{'name': 'X', 'rate': 44100, 'frames': 10}]}, **kw)
@@ -185,6 +209,9 @@ def cli(*argv):
     return rc, out.getvalue()
 
 rc, out = cli('--status'); assert rc == 0 and 'SIMULATED S2000' in out and 'bus: idle' in out, out
+fetched = os.path.join(tmp, 'fetched')
+rc, out = cli('--fetch-job', final['id'], fetched)
+assert rc == 0 and sorted(os.listdir(fetched)) == sorted(os.listdir(jobdir)), (out, os.listdir(fetched))
 rc, out = cli('--list'); assert rc == 0 and "'KICK" in out and 'free:' in out, out
 rc, out = cli('--piscsi'); assert rc == 0 and 'unmanaged' in out and 'restore mode' in out, out
 rc, out = cli('--yes', pad := mkwav('pad2.wav', 1, 22050, 0.5), l)
@@ -199,6 +226,8 @@ rc, out = cli('--download', '1', os.path.join(tmp, 'dl.wav')); assert rc == 0 an
 rc, out = cli('--pairs'); assert rc == 0, out
 rc, out = cli('--yes', k)                                   # KICK already exists on the simulated S2000
 assert rc == 1 and 'FAILED (send_failed)' in out and out.count('already on the S2000') == 1 and 'Not completed: KICK' in out, out
+failed_id = out.split('s2ksend --fetch-job ')[1].split()[0]               # the failure says how to fetch the evidence
+rc, out = cli('--jobs'); assert rc == 0 and failed_id in out and 'failed' in out, out
 rc, out = cli('--check', '99'); assert rc == 1 and 'STOP' in out, out
 os.environ['S2K_SERVER'] = 'http://127.0.0.1:9'
 srv.shutdown()

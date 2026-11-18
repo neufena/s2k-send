@@ -1,3 +1,4 @@
 include API.md CHANGELOG.md Makefile run_tests.sh s2kexec.cpp s2k-server.service
 recursive-include gpio-source *
 recursive-include tests *.py *.cpp *.out
+recursive-include docs *.md

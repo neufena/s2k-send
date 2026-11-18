@@ -54,7 +54,13 @@ simulated S2000), then start it.
 3. `POST /v1/jobs/{id}/start` returns `202`, `state: queued`, then `running`.
 4. Follow it: `GET /v1/jobs/{id}?since=N` (poll) or `GET /v1/jobs/{id}/events` (Server-Sent Events).
 5. `DELETE /v1/jobs/{id}` cancels a job that is not yet running (a running transfer cannot be stopped safely).
-   `GET /v1/jobs` lists recent jobs.
+   `GET /v1/jobs` lists recent jobs (the last 50 held in memory).
+6. `GET /v1/jobs/{id}/files` lists the evidence the server kept: `{id, files: [{name, bytes}]}`, and
+   `GET /v1/jobs/{id}/files/{name}` returns one file (`name` URL-encoded as a single path segment). Files are
+   `NAME.wav` (the exact audio sent), `transcript.log` (every SCSI command, with `t=` seconds since the session started
+   and `dt=` the command's duration) and, after a failed comparison, `NAME-expected.pcm` / `NAME-readback.pcm`.
+   This works for older jobs too, as long as their folder is still in `--data-dir`. Unknown jobs or files give `404`
+   (`no_such_job` / `no_such_file`).
 
 **Job object**
 ```json
@@ -70,11 +76,11 @@ simulated S2000), then start it.
 * `result.pairs` lists each `-L`/`-R` pair in the batch and whether the S2000 linked it (it does this itself when the `-R` arrives after the `-L`; both partner fields are read back to check).
 * `progress.phase` is one of `header`, `audio` (writing), `finalise`, `verify_header`, `verify_audio`; `done`/`total` are bytes.
 * Pass `since=<next from the previous reply>` to receive only new log lines.
-* `error.code` is one of `send_failed`, `verify_failed`, `needs_attention`, `rehearsal_failed`, `busy`, `internal_error`.
+* `error.code` is one of `send_failed`, `verify_failed`, `list_mismatch`, `needs_attention`, `rehearsal_failed`, `busy`, `internal_error`.
   `verify_failed` means the transfer completed and the bus is healthy, but a read-back comparison failed.
-  `send_failed` with the message "the sample list after the batch is not what was expected" means every sample was
-  sent and verified, but the S2000's list afterwards did not match; its state is uncertain, so the bus is left in
-  `needs_attention`. Do not retry: power-cycle, recover, and check the list.
+  `list_mismatch` means every sample was sent and verified, but the S2000's lists afterwards did not match what was
+  expected; its state is uncertain, so the bus is left in `needs_attention`. Do not retry: power-cycle, recover, and
+  check the list.
 * After `failed`, `error.done` lists samples already in the S2000's RAM (with slots) and `not_completed` those that are
   not (the one being sent when it stopped may be partly there).
 
