@@ -173,6 +173,18 @@ def show_pairs(c):
             f'field = 0x{rule["base"]:04x} + {rule["stride"]} x slot of the partner')
 
 
+def download_progress():
+    shown = [-1]
+
+    def show(p):
+        if p.get('phase') == 'download' and p.get('total'):
+            pct = p['done'] * 100 // p['total']
+            if pct // 10 > shown[0]:
+                shown[0] = pct // 10
+                say(f'  reading audio: {pct}% ({p["done"] / 1000:.0f} of {p["total"] / 1000:.0f} KB)')
+    return show
+
+
 def fetch_job(c, job_id, folder):
     files = c.job_files(job_id)
     os.makedirs(folder, exist_ok=True)
@@ -271,10 +283,11 @@ def main(argv=None):
         elif a.download is not None:
             if len(a.wavs) != 1:
                 ap.error('--download SLOT needs exactly one output file name')
-            info, wav = c.sample_audio(a.download, 'wav')
+            info, wav = c.download(a.download, 'wav', on_progress=download_progress())
             with open(a.wavs[0], 'wb') as f:
                 f.write(wav)
-            say(f'saved slot {a.download} {info["name"]!r} ({info["frames"]} frames, {info["rate"]} Hz) to {a.wavs[0]}')
+            say(f'saved slot {a.download} {info["name"]!r} ({info["frames"]} frames, {info["rate"]} Hz) to {a.wavs[0]}'
+                f' (read in {info["elapsed_s"]} s, {info["read_kbps"]} KB/s)')
         elif a.jobs:
             if a.wavs:
                 ap.error('--jobs takes no file names')

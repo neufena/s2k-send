@@ -34,6 +34,7 @@ import time
 import traceback
 import urllib.parse
 import uuid
+import wave
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 
 import s2kcore as core
@@ -54,8 +55,10 @@ class ApiError(Exception):
 
 # --------------------------------------------------------------------------- jobs
 class Job:
-    def __init__(self, jid, specs, root, verify, block, directory):
+    def __init__(self, jid, specs, root, verify, block, directory, kind='send', slot=None):
         self.id, self.specs, self.root, self.verify, self.block, self.dir = jid, specs, root, verify, block, directory
+        self.kind, self.slot = kind, slot          # 'send', or 'download' of the sample in `slot`
+        self.audio_file = None                     # a finished download's WAV
         self.audio = [None] * len(specs)
         self.state = 'awaiting_audio'
         self.created = time.time()
@@ -88,7 +91,8 @@ class Job:
 
     def snapshot(self, since=0):
         with self.cond:
-            return {'id': self.id, 'state': self.state, 'created': self.created, 'root': self.root,
+            return {'id': self.id, 'kind': self.kind, 'slot': self.slot, 'state': self.state, 'created': self.created,
+                    'root': self.root,
                     'verify': self.verify, 'block': self.block,
                     'samples': [dict(sp, uploaded=self.audio[i] is not None) for i, sp in enumerate(self.specs)],
                     'rehearsal': self.rehearsal, 'progress': self.progress,
@@ -145,8 +149,18 @@ class JobManager:
             clean.append({'name': name, 'rate': rate, 'frames': frames, **({'root': sroot} if sroot is not None else {})})
         if total > MAX_TOTAL_BYTES:
             raise ApiError(413, 'too_big', f'{total} bytes of audio is more than the {MAX_TOTAL_BYTES} byte limit')
+        return self._add(lambda jid, d: Job(jid, clean, root, verify, block, d))
+
+    def create_download(self, slot):
+        """A read-only job: queued at once (no upload, rehearsal or confirmation needed)."""
+        job = self._add(lambda jid, d: Job(jid, [], None, False, core.PCM_BLOCK, d, kind='download', slot=slot))
+        job.set_state('queued')
+        self.q.put(job.id)
+        return job
+
+    def _add(self, make):
         jid = time.strftime('%Y%m%d-%H%M%S-') + uuid.uuid4().hex[:6]
-        job = Job(jid, clean, root, verify, block, os.path.join(self.data_dir, 'jobs', jid))
+        job = make(jid, os.path.join(self.data_dir, 'jobs', jid))
         with self.lock:
             self.jobs[jid] = job
             while len(self.jobs) > KEEP_JOBS:
@@ -227,29 +241,49 @@ class JobManager:
 
     def _run(self, job):
         os.makedirs(job.dir, exist_ok=True)
-        items = job.items()
-        total = sum(len(i.pcm) for i in items)
+        if job.kind == 'download':
+            work, budget, failed_code = self._download, 300.0, 'read_failed'
+        else:
+            items = job.items()
+            budget = max(600.0, 120 + sum(len(i.pcm) for i in items) / 50000)
+            failed_code = 'send_failed'
+            work = lambda job, sess: core.op_send(sess, items, job.root, job.verify, progress=job.add_log,
+                                                  done=job.done, sent_dir=job.dir)
         job.set_state('running')
         with open(os.path.join(job.dir, 'transcript.log'), 'w', buffering=1) as logf:
             for _ in range(240):                              # wait (up to 2 min) if a read operation holds the bus
                 try:
-                    with self.bus.session(lambda m: logf.write(m + '\n'), budget_s=max(600.0, 120 + total / 50000)) as sess:
+                    with self.bus.session(lambda m: logf.write(m + '\n'), budget_s=budget) as sess:
                         sess.block, sess.on_event, sess.dump_dir = job.block, job.on_event, job.dir
-                        job.result = core.op_send(sess, items, job.root, job.verify, progress=job.add_log,
-                                                  done=job.done, sent_dir=job.dir)
+                        job.result = work(job, sess)
                     job.set_state('done')
                     return
                 except Busy:
                     time.sleep(0.5)
                 except NeedsAttention as e:
                     return self._fail(job, 'needs_attention', str(e))
+                except LookupError as e:
+                    return self._fail(job, 'not_found', str(e))
                 except VerifyError as e:
                     return self._fail(job, 'verify_failed', str(e))
                 except core.ListMismatch as e:
                     return self._fail(job, 'list_mismatch', str(e))
                 except SendError as e:
-                    return self._fail(job, 'send_failed', str(e))
+                    return self._fail(job, failed_code, str(e))
         self._fail(job, 'busy', 'the bus stayed busy for two minutes')
+
+    def _download(self, job, sess):
+        t0 = time.monotonic()
+        job.add_log(f'reading sample slot {job.slot}')
+        info, pcm = core.op_audio(sess, job.slot)
+        elapsed = time.monotonic() - t0
+        path = os.path.join(job.dir, core.safe_stem(info['name']) + '.wav')
+        core.save_wav(path, pcm, info['rate'])
+        job.audio_file = path
+        job.add_log(f'read {info["name"]!r}: {info["frames"]} frames at {info["rate"]} Hz, {len(pcm) / 1000:.0f} KB '
+                    f'in {elapsed:.1f} s')
+        return dict({k: v for k, v in info.items() if k != 'header_hex'}, bytes=len(pcm), elapsed_s=round(elapsed, 2),
+                    read_kbps=round(len(pcm) / max(elapsed, 1e-9) / 1000, 1))
 
 
 # --------------------------------------------------------------------------- HTTP
@@ -396,6 +430,34 @@ def sample_audio(h, slot, query):
         raise ApiError(400, 'bad_format', 'format must be wav or pcm')
 
 
+@route('POST', r'/v1/samples/(\d+)/download')
+def sample_download(h, slot, query):
+    job = h.jobs.create_download(int(slot))
+    h._json(202, job.snapshot())
+
+
+@route('GET', r'/v1/jobs/([\w-]+)/audio')
+def job_audio(h, jid, query):
+    job = h.jobs.get(jid)
+    if job.kind != 'download':
+        raise ApiError(400, 'not_a_download', f'job {jid} is a {job.kind} job')
+    if job.state != 'done' or not job.audio_file:
+        raise ApiError(409, 'wrong_state', f'the download is {job.state}; the audio is available once it is done')
+    fmt = (query.get('format') or ['wav'])[0]
+    if fmt not in ('wav', 'pcm'):
+        raise ApiError(400, 'bad_format', 'format must be wav or pcm')
+    r = job.result
+    headers = {'X-S2K-Name': r['name'], 'X-S2K-Rate': r['rate'], 'X-S2K-Frames': r['frames'], 'X-S2K-Root': r['root']}
+    with open(job.audio_file, 'rb') as f:
+        data = f.read()
+    if fmt == 'pcm':
+        with wave.open(job.audio_file, 'rb') as w:
+            data = w.readframes(w.getnframes())
+        h._send(200, data, 'application/octet-stream', headers)
+    else:
+        h._send(200, data, 'audio/wav', headers)
+
+
 @route('GET', r'/v1/pairs')
 def pairs(h, query):
     h._json(200, h.read_op(core.op_pairs, 'pairs'))
@@ -404,7 +466,8 @@ def pairs(h, query):
 # -- jobs
 @route('GET', r'/v1/jobs')
 def jobs_list(h, query):
-    h._json(200, {'jobs': [{'id': j.id, 'state': j.state, 'created': j.created, 'samples': len(j.specs)}
+    h._json(200, {'jobs': [{'id': j.id, 'kind': j.kind, 'state': j.state, 'created': j.created,
+                            'samples': len(j.specs) if j.kind == 'send' else 1}
                            for j in reversed(list(h.jobs.jobs.values()))]})
 
 
