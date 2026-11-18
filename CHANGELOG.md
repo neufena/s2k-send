@@ -1,0 +1,89 @@
+# Changelog
+
+All notable changes to this project are recorded here. The format follows
+[Keep a Changelog](https://keepachangelog.com/en/1.1.0/) and the project uses [Semantic Versioning](https://semver.org/).
+
+## [Unreleased]
+
+### Added
+- Python packaging (`pyproject.toml`): `pip install` gives the `s2ksend` and `s2kserver` commands.
+- `make install` puts the `s2kexec` bus helper on `PATH`; the server finds it there when installed as a package.
+- MIT licence for the project's own code.
+- GitHub Actions CI: tests on Python 3.9 to 3.13, `s2kexec` build, package build.
+- This changelog.
+
+### Changed
+- `run_tests.sh` exits non-zero when a test fails.
+- The systemd unit runs the installed `s2kserver` command.
+
+### Removed
+- `tests/test_physical.py`, which targeted the pre-0.7 single-file tool. Its 32 KB block case moved to `tests/test_server.py`.
+
+## [0.8.0] - 2026-11-18
+
+### Added
+- PiSCSI setup retention: the attached devices are saved before PiSCSI is stopped and restored after it restarts
+  (`--restore-piscsi exact|attach-only|off`), with the snapshot kept in `<data-dir>/piscsi-snapshot.json`.
+- `--piscsi` to show the PiSCSI state, attached devices and the saved setup.
+- Stereo link report in job results (`linked` / `NOT linked`).
+
+### Changed
+- The sample list is read once before and once after a batch instead of after every sample (about 15 fewer commands per sample).
+- A read that arrives while the keep-bus timer is restarting PiSCSI now waits instead of returning `409 busy`.
+
+### Fixed
+- Duplicate "rehearsal OK", "All done" and failure lines in the CLI output.
+- A harmless early failure could leave PiSCSI stopped; only audio, header and finalise messages now count as writes.
+
+## [0.7.0] - 2026-11-17
+
+### Added
+- Split into a server (`s2kserver.py`, on the Pi), a client library (`s2kclient.py`) and a CLI (`s2ksend.py`) over an HTTP/JSON API
+  with polling and SSE (see `API.md`).
+- Keep-bus handling: PiSCSI stays stopped for `--keep-bus` seconds after an operation.
+- `--mock` server mode backed by the simulated S2000.
+
+Hardware: a 3-sample batch (687 KB, 201 commands, 11.06 s) sent from another computer and verified; the S2000 linked
+`LOOP      -L` / `LOOP      -R` as a stereo pair by itself.
+
+## [0.6.0] - 2026-11-16
+
+### Added
+- Batches of several files, 22.05 kHz sends, `--block`, a speed report.
+- Stereo halves named the way the S2000 names its own pairs (`-L` / `-R` as the last two of 12 characters).
+- `--pairs` to show stereo pairs and their partner fields.
+
+## [0.5.0] - 2026-11-16
+
+### Added
+- Stereo WAVs sent as two mono samples. Hardware: `loop.wav` (3.69 s) sent and verified byte-for-byte.
+
+## [0.4.0] - 2026-11-16
+
+### Fixed
+- sox dither disabled (`sox -D`) so conversions are reproducible; the earlier audio mismatch came from dither, not the transfer.
+
+### Added
+- The exact audio sent is saved, and an audio mismatch writes expected/read-back dumps with a diagnosis.
+  First fully verified mono send on hardware.
+
+## [0.3.0] - 2026-11-16
+
+### Fixed
+- Audio read-back requests count 16-bit words (frames), not bytes.
+
+## [0.2.0] - 2026-11-16
+
+### Changed
+- Header read-back differences are shown as notes; only name, length or rate fail the check.
+
+### Added
+- Read-only `--check`.
+
+## [0.1.0] - 2026-11-16
+
+### Added
+- First single-file sender. Its header read-back check was too strict and reported a false failure.
+
+[Unreleased]: https://github.com/neufena/s2k-send/compare/v0.8.0...HEAD
+[0.8.0]: https://github.com/neufena/s2k-send/releases/tag/v0.8.0

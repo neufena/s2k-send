@@ -1166,6 +1166,14 @@ class NeedsAttention(Exception):
     """A failed send left the bus/S2000 state uncertain: power-cycle, then recover."""
 
 
+def default_helper():
+    """The s2kexec bus helper: next to this file in a source checkout, otherwise on PATH (`make install`)."""
+    local = os.path.join(os.path.dirname(os.path.abspath(__file__)), 's2kexec')
+    if os.path.exists(local):
+        return local
+    return shutil.which('s2kexec') or '/usr/local/bin/s2kexec'
+
+
 class BusManager:
     """Owns the SCSI bus: one operation at a time, PiSCSI stopped while an operation runs.
 
@@ -1180,7 +1188,7 @@ class BusManager:
         self.target, self.initiator, self.mock = target, initiator, mock
         self.pm = piscsi or PiscsiManager(log=log, mode=restore_mode, state_file=state_file)
         self.last_restore = None
-        self.helper = helper or os.path.join(os.path.dirname(os.path.abspath(__file__)), 's2kexec')
+        self.helper = helper or default_helper()
         self.manage_piscsi, self.keep_bus = manage_piscsi, keep_bus
         self.require_root, self.timeout, self.log = require_root, timeout, log
         self.lock = threading.Lock()
@@ -1241,7 +1249,7 @@ class BusManager:
         if self.require_root and os.geteuid() != 0:
             raise SendError('the server must run as root (sudo) to use the GPIO bus')
         if not os.path.exists(self.helper if not isinstance(self.helper, (list, tuple)) else self.helper[-1]):
-            raise SendError(f'bus helper {self.helper} not found: run `make` first')
+            raise SendError(f'bus helper {self.helper} not found: run `make` (and `sudo make install` for an installed server)')
         if self.manage_piscsi:
             if self.pm.active():
                 self.pm.snapshot()                        # remember the attached devices first

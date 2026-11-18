@@ -1,6 +1,6 @@
 # s2kserver HTTP API (version 1)
 
-`s2kserver.py` runs on the Raspberry Pi that has the PiSCSI board. Clients (the CLI, a GUI, scripts) talk to it over
+`s2kserver` runs on the Raspberry Pi that has the PiSCSI board. Clients (the CLI, a GUI, scripts) talk to it over
 plain HTTP + JSON on the home network. **There is no authentication or TLS: private network only.**
 Default address `http://<pi>:8420`. All endpoints are under `/v1/`. CORS is open (`Access-Control-Allow-Origin: *`).
 

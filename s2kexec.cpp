@@ -1,11 +1,11 @@
 // SPDX-License-Identifier: BSD-3-Clause
 //
-// s2kexec - tiny SCSI initiator helper for s2ksend.py.
+// s2kexec - tiny SCSI initiator helper for the s2k-send server (s2kcore.HelperBus).
 //
 // Runs ON the Raspberry Pi, as root, with PiSCSI STOPPED. It opens the PiSCSI
 // board as a SCSI initiator (using the gpio-source/ files, which are BSD-3
 // code derived from SCSI2Pi/PiSCSI - see gpio-source/LICENSE and NOTICE) and
-// executes exactly the commands s2ksend.py asks for, one per line. It contains
+// executes exactly the commands the server asks for, one per line. It contains
 // no Akai logic at all.
 //
 // Line protocol (stdin -> stdout, hex = lowercase hex, "-" = empty):

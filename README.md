@@ -1,138 +1,150 @@
-# s2k-send: send samples to an Akai S2000 over SCSI from a Raspberry Pi + PiSCSI (client / server)
+# s2k-send
+
+Send samples to an Akai S2000 over SCSI from a Raspberry Pi with a PiSCSI board.
 
 No disk image and no slow MIDI sample dump: the Pi's PiSCSI board acts as the SCSI **initiator** and talks to the S2000
-through its SCSI-MIDI tunnel (vendor commands 09/0C/0D/0E carrying Akai SysEx), the same channel MESA / ReCycle use.
+through its SCSI-MIDI tunnel (vendor commands 09/0C/0D/0E carrying Akai SysEx), the same channel MESA and ReCycle use.
 
     +-------------------+   HTTP/JSON    +------------------------------+   SCSI   +---------+
-    | s2ksend.py (CLI)  | -------------> | s2kserver.py  (on the Pi)    | -------> | S2000   |
+    | s2ksend (CLI)     | -------------> | s2kserver  (on the Pi)       | -------> | S2000   |
     | or a GUI          |  home network  | -> s2kcore + s2kexec + GPIO  |          | ID 6    |
     +-------------------+                +------------------------------+          +---------+
 
-* **Server** (`s2kserver.py`, on the Pi, as root): owns the bus, stops/restarts PiSCSI around each operation, runs send jobs,
-  rehearses every job on a simulated S2000 first, verifies every sample by reading it back, keeps transcripts.
-* **Client** (`s2ksend.py` CLI, `s2kclient.py` library): on the same Pi or any computer. Loads/converts audio, names samples,
-  uploads PCM, shows progress. Intended to become the back end of a GUI such as AKAISDS: see **API.md**.
+* **Server** (`s2kserver`, on the Pi, as root): owns the bus, stops and restarts PiSCSI around each operation, runs send jobs,
+  rehearses every job on a simulated S2000 first, verifies every sample by reading it back, and keeps transcripts.
+* **Client** (`s2ksend` CLI, `s2kclient` library): on the same Pi or any computer. Loads and converts audio, names samples,
+  uploads PCM and shows progress. A GUI can use the library or the HTTP API directly: see [API.md](API.md).
 * **Home network only**: the server has no authentication.
 
-## Status (read this first)
-* **Hardware-verified (17 Nov 2026, server on the Pi, client on another computer):** `--status`, `--list`, a batch (mono + stereo, verified
-  byte-for-byte), `--check`, `--download`, `--pairs`, the busy/not-found error paths. **Earlier, single-file tool (16 Nov 2026):** mono and stereo sends, 44.1 kHz, byte-for-byte audio read-back,
-  header checks, read-only inspection of samples and stereo pairs. See the hardware log below.
-* **Since that run (v0.8), simulator-tested only:** PiSCSI setup retention, batch-mode inventory, pair link report, busy-wait during the
-  keep-bus restart, duplicate-line fixes. All pass `./run_tests.sh`.
-* **Not yet tried on hardware:** 22.05 kHz (use a new `--name`), `--block 32768`, batches of many files, PiSCSI setup retention.
-* Fewer safety gates than the original project this knowledge came from (no replay gate, no pinned hashes). The rehearsal and the
-  audio read-back are the substitutes. **Provenance and licence: see the end of this file.**
+Scope is sending samples to the S2000 and reading them back. Programs, keygroups, deleting and renaming are left to MIDI tools.
+
+## Status
+* **Verified on hardware** (Pi 3 Model B, PiSCSI, S2000): mono and stereo sends at 44.1 kHz with byte-for-byte read-back, batches
+  from a client on another computer, `--status`, `--list`, `--check`, `--download`, `--pairs`, and the busy / not-found error paths.
+* **Simulator-tested only**: 22.05 kHz sends, `--block 32768`, PiSCSI setup retention, large batches, the systemd service.
+* The simulated S2000 is built from our understanding of the protocol. Passing tests show the command sequence is self-consistent,
+  not that a real S2000 accepts it; every hardware result was confirmed by reading back from the sampler.
+
+See [CHANGELOG.md](CHANGELOG.md) for the version history.
 
 ## Hardware
-* PiSCSI board that supports initiator mode (FULLSPEC board, or direct wiring without transceivers). The S2000 Bridge project
-  page says it was tested with a Raspberry Pi 3 and a RaSCSI v2.3B; other Pi models/boards are untested here.
-* S2000 = ID 6. The Pi becomes the initiator, default ID 7, so **power off/disconnect the Mac** (or use `--initiator N`).
-* While an operation runs, `piscsi` is stopped: the Pi's emulated disks vanish, then come back (`--keep-bus` seconds later) **with the
+* A PiSCSI board that supports initiator mode (FULLSPEC board, or direct wiring without transceivers). The S2000 Bridge project
+  page says it was tested with a Raspberry Pi 3 and a RaSCSI v2.3B; other Pi models and boards are untested here.
+* S2000 at SCSI ID 6. The Pi becomes the initiator, default ID 7, so **power off or disconnect any other initiator using ID 7**
+  (or pass `--initiator N`).
+* While an operation runs, `piscsi` is stopped: the Pi's emulated disks vanish, then come back `--keep-bus` seconds later **with the
   same setup as before** (see below).
 
-## Install and run the server (on the Pi)
-    sudo apt install g++ make sox python3
-    make                                   # builds ./s2kexec, the bus helper
-    sudo ./s2kserver.py                    # listens on :8420; add --keep-bus 0 to restart PiSCSI immediately
-    ./s2kserver.py --mock                  # simulated S2000 for developing clients, no hardware, no root
-To start it at boot see `s2k-server.service`. Options: `--target 6 --initiator 7 --data-dir DIR --no-manage-piscsi --keep-bus SECS --restore-piscsi exact|attach-only|off`.
+## Install
 
-## Use the client (same Pi or another computer; needs only s2ksend.py, s2kcore.py, s2kclient.py)
+### Server (on the Pi)
+    sudo apt install g++ make python3-venv
+    git clone https://github.com/neufena/s2k-send && cd s2k-send
+    sudo make install                                     # builds the s2kexec bus helper into /usr/local/bin
+    sudo python3 -m venv /opt/s2k-send
+    sudo /opt/s2k-send/bin/pip install .
+    sudo /opt/s2k-send/bin/s2kserver                      # listens on :8420
+To start it at boot, follow the header of [s2k-server.service](s2k-server.service).
+
+Options: `--target 6 --initiator 7 --data-dir DIR --helper PATH --no-manage-piscsi --keep-bus SECS --restore-piscsi exact|attach-only|off`.
+`--mock` runs against a simulated S2000, with no hardware and no root, for developing clients.
+
+### Client (any computer with Python 3.9 or later)
+    pipx install git+https://github.com/neufena/s2k-send  # or: pip install . from a checkout
+sox is needed only for audio that is not already 16-bit WAV at 44.1 or 22.05 kHz.
+
+### From a checkout, without installing
+    make && sudo ./s2kserver.py                           # the server finds ./s2kexec next to s2kcore.py
+    ./s2ksend.py --status
+
+## Use
     export S2K_SERVER=http://piscsi.local:8420            # or pass --server each time
-    ./s2ksend.py --status                                 # server + bus state
-    ./s2ksend.py --list                                   # samples on the S2000 and free memory (read-only)
-    ./s2ksend.py --piscsi                                 # PiSCSI state, attached devices, the saved setup (read-only)
-    ./s2ksend.py kick.wav snare.wav hats.wav loop.wav     # send a batch (asks you to type SEND)
-    ./s2ksend.py loop.wav --name LOOP --rate 22050 --block 32768 --no-verify-pcm --yes
-    ./s2ksend.py --check 6 kick.wav                       # read-only: header + audio compared with a file
-    ./s2ksend.py --download 6 kick_back.wav               # read-only: save a sample as WAV
-    ./s2ksend.py --pairs                                  # read-only: stereo -L/-R pairs and their partner fields
-    ./s2ksend.py --rehearse-only kick.wav loop.wav        # plan + rehearse locally, server not contacted
-Every send flow: load and plan locally -> upload -> server rehearsal -> you confirm -> transfer with live progress -> verify.
+    s2ksend --status                                      # server and bus state
+    s2ksend --list                                        # samples on the S2000 and free memory (read-only)
+    s2ksend --piscsi                                      # PiSCSI state, attached devices, the saved setup (read-only)
+    s2ksend kick.wav snare.wav hats.wav loop.wav          # send a batch (asks you to type SEND)
+    s2ksend loop.wav --name LOOP --rate 22050 --block 32768 --no-verify-pcm --yes
+    s2ksend --check 6 kick.wav                            # read-only: header and audio compared with a file
+    s2ksend --download 6 kick_back.wav                    # read-only: save a sample as WAV
+    s2ksend --pairs                                       # read-only: stereo -L/-R pairs and their partner fields
+    s2ksend --rehearse-only kick.wav loop.wav             # plan and rehearse locally, server not contacted
+Every send: load and plan locally -> upload -> server rehearsal -> you confirm -> transfer with live progress -> verify.
 
-### Batches, rates and speed
-* Names come from the file names (12 characters; duplicates get a number, e.g. KICK, KICK2). `--name` is for a single file.
-* `--rate auto` (default): sources at or below 22.05 kHz go as 22.05 kHz, anything above as 44.1 kHz; `--rate 44100|22050` forces one
-  (sox resamples, dither off). 22.05 kHz sets header bandwidth byte 0 and rate 22050 (Ohsaki's S3000 format notes).
-* Speed: each run reports audio-write, verify-read and overall KB/s. Try `--block 32768` (MESA's size; default 16384 is the size proven
-  here) and `--no-verify-pcm` (the read-back takes about as long again as the send). The sample-list read after each sample is reused
-  as the next one's starting point.
-* Stereo: a stereo WAV becomes two mono samples named the way the S2000 names its own pairs (name padded to 10 characters, then
-  `-L` / `-R` as the last two of 12), sent L then R. **The S2000 links them as a stereo pair by itself** when the R arrives (seen on
-  hardware, 17 Nov 2026); the job checks both partner fields afterwards and reports `linked` or `NOT linked`. `--mono-mix` sends one
-  mono sample instead. If the second half fails the first is reported as already in RAM.
-* Command count is what costs time (about 50 ms per SCSI command): a send reads the sample list once before and once after the batch
-  (not after every sample); each sample's name is checked at its slot by the header read-back.
+### Names, rates and stereo
+* Names come from the file names (12 characters from `0-9`, space, `A-Z`, `#`, `+`, `-`, `.`; duplicates get a number, e.g. KICK,
+  KICK2). `--name` is for a single file.
+* `--rate auto` (default): sources at or below 22.05 kHz go as 22.05 kHz, anything above as 44.1 kHz. `--rate 44100|22050` forces one
+  (sox resamples with dither off, so conversions are repeatable).
+* A stereo WAV becomes two mono samples named the way the S2000 names its own pairs (name padded to 10 characters, then `-L` / `-R`
+  as the last two of 12), sent L then R. **The S2000 links them as a stereo pair by itself** when the R arrives; the job checks both
+  partner fields afterwards and reports `linked` or `NOT linked`. `--mono-mix` sends one mono sample instead.
+
+### Speed
+Each run reports audio-write, verify-read and overall KB/s. Time is dominated by command count (about 50 ms per SCSI command), not
+data rate; a 3-sample, 687 KB batch took 11 s. `--block 32768` (MESA's size; the default 16384 is the size proven on hardware) and
+`--no-verify-pcm` (the read-back takes about as long again as the send) both help.
 
 ## Your PiSCSI setup is kept
 Before the server stops `piscsi` it reads the attached devices with `scsictl -l` and saves them (in memory and in
 `<data-dir>/piscsi-snapshot.json`). After starting PiSCSI again it waits for the web UI's own default config to settle, then puts the
 setup back: it re-attaches what is missing (`scsictl -i ID[:LUN] -c attach -t TYPE -f FILE`, write protection included) and, in the default
-`--restore-piscsi exact` mode, detaches anything that was not there before, so the result matches what you had. `attach-only` never detaches;
-`off` just restarts the services as before. The snapshot is kept if the server restarts or a send fails while PiSCSI is stopped, and is applied
-by `--recover` / the next restart. Check what it sees with `./s2ksend.py --piscsi`.
-Limits: only what `scsictl -l` shows is restored (ID, LUN, type, image file, write protect), not vendor/product names or non-default block
-sizes. The output format of `scsictl -l` differs a little between PiSCSI versions, so confirm once with `--piscsi` that your devices are listed
-correctly before relying on it. This is simulator-tested (fake systemctl/scsictl) and not yet tried on a real PiSCSI.
+`--restore-piscsi exact` mode, detaches anything that was not there before. `attach-only` never detaches; `off` just restarts the
+services. The snapshot survives a server restart or a failed send, and is applied by `--recover` or the next restart.
+
+Limits: only what `scsictl -l` shows is restored (ID, LUN, type, image file, write protect), not vendor/product names or non-default
+block sizes. The output format of `scsictl -l` varies between PiSCSI versions, so check once with `s2ksend --piscsi` that your devices
+are listed correctly before relying on it.
 
 ## If something goes wrong
 After an error that may have written, the server leaves PiSCSI stopped and refuses work (`needs_attention`). Switch SCSI-MIDI off on the
-S2000 if it is silent, power-cycle the S2000 and the Pi, then `./s2ksend.py --recover`. A failed read-back comparison is different: the
-transfer completed, the bus is fine and PiSCSI is restarted normally; the output says how to inspect the sample read-only.
-Samples live only in S2000 RAM: save them to disk on the S2000 if you want to keep them. Nothing is retried automatically.
-The exact audio sent and a transcript of every SCSI command are kept per job under the server's `--data-dir`.
+S2000 if it is silent, power-cycle the S2000 and the Pi, then run `s2ksend --recover`. Nothing is retried automatically.
 
-## Tests (no hardware)
-    ./run_tests.sh
-`tests/parity.py` compares 11 wire frames byte-for-byte with the reference C++ output; `test_server.py` runs the server, client library
-and CLI against a simulated S2000 (batches, both rates, stereo, errors, busy bus, SSE, failure and recovery through a fake bus helper).
+A failed read-back comparison is different: the transfer completed, the bus is fine and PiSCSI restarts normally; the output says how
+to inspect the sample read-only. The exact audio sent, a transcript of every SCSI command and, on a mismatch, the expected and
+read-back audio are kept per job under the server's `--data-dir`.
 
-## Files
-s2kcore.py (protocol, simulator, bus manager, audio helpers) | s2kserver.py | s2kclient.py | s2ksend.py (CLI) | API.md |
-s2kexec.cpp + Makefile (bus helper, no Akai logic) | gpio-source/ (BSD-3 initiator code, licence kept) | s2k-server.service | tests/
+Samples live only in the S2000's RAM: save them to disk on the sampler to keep them.
 
-## Stereo pairs: the S2000 links them itself
-* **Sending a correctly named pair links it.** `LOOP      -L` then `LOOP      -R` (S2000 naming, -L/-R as the last two of 12 characters) were
-  sent with partner field 0000; the S2000 stored `ffff` for the L, and when the R arrived it set both fields itself: L = 0x6060,
-  R = 0x6054, the addresses of each other's entry (17 Nov 2026). Earlier sends named `LOOP-L` / `LOOP-R` (the suffix right after the name)
-  were not linked (both stayed `ffff`), so the naming convention is what triggers it. **Writing the partner field is not needed.**
-* What the field is: in every real pair (29 loaded from disk, plus this one) each field is the internal address of the partner's 12-byte
-  entry and `address(R) = address(L) + 12`. On a sampler with no holes in its table the address is `0x6018 + 12 x slot` (0x6018 on the
-  4-sample, 1-program state seen last); after much loading and deleting the base moves and extra entries sit between groups of pairs
-  (0x6030 and 0x6024 seen as bases; 36 extra entries across 58 samples). `--pairs` reports the spacing and any gaps.
-* Not yet tested: sending R before L, or a different sample in between, to see whether the link still forms.
+| Symptom | Meaning and action |
+| --- | --- |
+| `409 busy` | A job or read is using the bus. Retry shortly. |
+| `needs_attention` | See above: power-cycle both, then `s2ksend --recover`. |
+| `already on the S2000: NAME` | Name clash. Use `--name` or delete the sample on the S2000. |
+| `verify_failed` | Transfer completed, bus healthy. Inspect with `s2ksend --check SLOT file`. |
+| `bus helper ... not found` | Run `sudo make install` (or `make` in a checkout). |
+| Emulated disks missing after a job | Wait `--keep-bus` seconds, then check `--status` and `--piscsi`. |
+| No answer from the S2000 | Another initiator on ID 7, wrong `--target`, SCSI-MIDI left on after a failure, or the board is not in initiator mode. |
 
-## Provenance and licence (please read before sharing)
-* The command sequence and encodings follow the S2000 Bridge release (michaelsanois/s2000-bridge) and the
-  MESA II research at michaelsanois/mesa2-research, which independently documents the same sample-import
-  sequence (bulk MODE, sample header + readiness reply, raw PCM blocks with flag 0x80, normal MODE, post-object).
-* `SAMPLE_TEMPLATE` in s2ksend.py is the captured 192-byte header template from that release.
-* No licence file was visible on either repository when this was written, so default copyright applies.
-  Treat this package as PERSONAL USE ONLY until the author gives permission; do not redistribute it.
-* `gpio-source/` is BSD-3-Clause (SCSI2Pi/PiSCSI-derived); its LICENSE and NOTICE must travel with it.
+## Technical notes
+* The S2000 stores a sent stereo-partner field of `0000` as `ffff` (none) and fills in the sample's internal start address itself, so
+  those two header fields always differ on read-back and are reported as notes, not failures.
+* Audio read-back requests count 16-bit words (frames), not bytes.
+* Stereo partner fields hold the internal address of the other half's 12-byte table entry, with `address(R) = address(L) + 12`. The
+  table base moves after loading and deleting, so the address cannot be worked out from the slot number; the S2000 sets it.
+  The `-L` / `-R` suffix must be the last two of the 12 characters: `LOOP-L` style names are not linked.
 
-## Hardware test log
-* 16 Nov 2026, Pi 3 Model B + PiSCSI board, S2000 at ID 6: a 0.4 s mono sample (kick.wav) transferred and played
-  back correctly. v0.1's header read-back check was too strict and reported a false failure; v0.2 prints any
-  differing header fields as notes and only fails on name, length or rate. Audio is still verified byte-for-byte.
-* 16 Nov 2026 `--check 4`: the S2000 reports the header exactly as sent except two bytes it sets itself: start
-  address (bytes 22-25, internal) and stereo partner (bytes 136-137 = ffff for a mono sample; the Bridge's own
-  receive code accepts 0000 or ffff as "no partner"). The audio read-back failed in v0.2 because the RSPACK
-  count is in sample WORDS (frames), not bytes; v0.3 asks for the right amount.
-* 16 Nov 2026, second `--check`: size now correct, audio comparison reported DIFFERS. v0.4 disables sox dither
-  (sox -D) so conversions are reproducible, saves the exact audio sent as NAME-sent.wav, and on any audio
-  mismatch writes NAME-expected.pcm / NAME-readback.pcm and prints a diagnosis (byte swap, sign flip, shift,
-  or tiny dither-like differences).
-* 16 Nov 2026, v0.4: `--name KICK2` on Pi 3 + S2000 (ID 6): header checked, audio verified byte-for-byte, 63 commands.
-  The earlier audio mismatch was sox dither in the comparison, not a transfer fault.
-* 16 Nov 2026, v0.5: loop.wav (stereo, 3.69 s, 162831 frames) sent as LOOP-L / LOOP-R (slots 6 and 7), each
-  verified byte-for-byte, 183 commands, 651 KB in all. Header notes identical to the mono case.
-* v0.6 (batches, 22.05 kHz, --block, speed report) is simulator-tested only so far (tests/: parity, verify, physical flow
-  through a fake helper at both rates and both block sizes, batch/rate/name planning).
-* v0.7: split into server / client / CLI with an HTTP API; simulator-tested only (see Status).
-* 17 Nov 2026, v0.7 server on the Pi (client on another computer): kick.wav + loop.wav (3 samples, 687 KB) sent and verified, 201 commands in 11.06 s
-  (audio writes 227 KB/s at block 16384, verify reads 412 KB/s, 62 KB/s overall: the time is mostly per-command latency, ~50 ms each).
-  The S2000 linked LOOP -L / -R as a stereo pair on its own. A GET that arrived while the keep-bus timer was restarting PiSCSI got 409 busy
-  (fixed in v0.8: it now waits). Duplicate 'rehearsal OK' / 'All done' / failure lines in the CLI output fixed in v0.8.
-* v0.8: PiSCSI setup retention (snapshot/reconcile), batch-mode inventory, stereo link report.
+## Development
+    ./run_tests.sh                                        # simulator only, no hardware; needs sox
+`tests/parity.py` compares 11 wire frames byte-for-byte with output from the reference C++ (`tests/parity.reference.out`);
+`test_server.py` runs the server, client library and CLI against a simulated S2000, including the real bus-helper protocol through
+`tests/fake_s2kexec.py`. CI runs the tests on Python 3.9 to 3.13, builds `s2kexec` and builds the package.
+
+New SCSI behaviour belongs in `Session` or an `op_*` function in `s2kcore.py`, mirrored in `MockS2000` so rehearsals and tests stay
+honest. New endpoints go in `s2kserver.py`, then `s2kclient.py`, then the CLI, then API.md.
+
+| File | Role |
+| --- | --- |
+| `s2kcore.py` | Protocol, simulated S2000, bus and PiSCSI management, audio loading and naming |
+| `s2kserver.py` | HTTP server and job queue |
+| `s2kclient.py` | Client library, standard library only |
+| `s2ksend.py` | CLI |
+| `s2kexec.cpp`, `Makefile` | Bus helper: runs one raw SCSI command per request line, no Akai logic |
+| `gpio-source/` | BSD-3-Clause initiator code (SCSI2Pi/PiSCSI-derived) |
+
+## Provenance and licence
+* s2k-send's own code is under the [MIT licence](LICENSE).
+* `gpio-source/` and `s2kexec.cpp` are BSD-3-Clause (SCSI2Pi/PiSCSI-derived); keep `gpio-source/LICENSE` and `NOTICE` with them.
+* The command sequence and encodings follow the S2000 Bridge release (michaelsanois/s2000-bridge) and the MESA II research
+  (michaelsanois/mesa2-research), which independently documents the same sample-import sequence.
+* `SAMPLE_TEMPLATE` in `s2kcore.py` is the 192-byte sample header template captured in that release. Those repositories carry no
+  licence, so **until the author gives permission, treat this package as personal use only and do not redistribute it.**

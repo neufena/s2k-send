@@ -4,7 +4,7 @@
 The server (s2kserver.py) runs on the Raspberry Pi with the PiSCSI board. This client can run on that Pi
 or on any other computer on the network:
 
-    ./s2ksend.py --server http://piscsi.local:8420 kick.wav snare.wav loop.wav
+    s2ksend --server http://piscsi.local:8420 kick.wav snare.wav loop.wav
     export S2K_SERVER=http://piscsi.local:8420          # or set it once
 
 Audio loading, naming and rate conversion (sox needed only for non-16-bit/odd-rate files) happen HERE; the
@@ -208,7 +208,7 @@ def send(c, a):
         say('Not completed: ' + ', '.join(err['not_completed']))
     if err.get('code') == 'needs_attention' or (err.get('code') == 'send_failed' and c.status()['bus']['state'] == 'needs_attention'):
         say('Something may have been written and the S2000 may still be in SCSI-MIDI mode. Switch SCSI-MIDI off on it if')
-        say('it is silent, power-cycle the S2000 and the Pi, then run: s2ksend.py --recover')
+        say('it is silent, power-cycle the S2000 and the Pi, then run: s2ksend --recover')
     return 1
 
 
