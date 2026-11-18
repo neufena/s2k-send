@@ -6,7 +6,7 @@ Used by the server (s2kserver.py, on the Raspberry Pi with the PiSCSI board), by
 The S2000's SCSI port tunnels MIDI SysEx (vendor commands 09 mode / 0C send / 0D status / 0E receive).
 The sequence and encodings follow a hardware-proven implementation (see README.md for provenance).
 """
-__version__ = '0.8.0'
+__version__ = '0.9.0.dev0'
 API_VERSION = 1
 
 import array
@@ -44,6 +44,11 @@ SAMPLE_TEMPLATE = bytes.fromhex(
 assert len(SAMPLE_TEMPLATE) == 192
 
 ACK = bytes([0xF0, 0x47, ADDR, 0x16, 0x48, 0x00, 0xF7])
+
+
+def words_used(frames):
+    """Sample memory the S2000 allocates: always an even number of 16-bit words (162831 frames used 162832)."""
+    return frames + frames % 2
 
 
 class SendError(Exception):
@@ -429,8 +434,9 @@ class Session:
             raise SendError(f'already on the S2000: {", ".join(clash)}; choose another --name')
         if len(inv.samples) + len(names) > 4096 or inv.free_headers < len(names):
             raise SendError('not enough free sample headers on the S2000')
-        if inv.free_words < sum(frame_counts):
-            raise SendError(f'needs {sum(frame_counts)} words but the S2000 has only {inv.free_words} free')
+        need = sum(words_used(f) for f in frame_counts)
+        if inv.free_words < need:
+            raise SendError(f'needs {need} words but the S2000 has only {inv.free_words} free')
         self.inventory_after = inv        # the first sample reuses this instead of reading the lists again
         return inv
 
@@ -443,8 +449,8 @@ class Session:
             raise SendError(f'a sample named {name!r} already exists on the S2000; choose another --name')
         if len(before.samples) >= 4096 or before.free_headers < 1:
             raise SendError('no free sample header on the S2000')
-        if before.free_words < frames:
-            raise SendError(f'sample needs {frames} words but the S2000 has only {before.free_words} free')
+        if before.free_words < words_used(frames):
+            raise SendError(f'sample needs {words_used(frames)} words but the S2000 has only {before.free_words} free')
         progress(f'S2000 has {len(before.samples)} samples, {before.free_words} free words')
         header = sample_header(name, root, frames, rate)
         progress('sending sample header')
@@ -476,7 +482,7 @@ class Session:
             # checks the NAME at that slot; the caller re-reads the whole list once at the end of the batch.
             index = len(before.samples)
             self.inventory_after = Inventory(before.programs, before.samples + [enc], before.free_headers - 1,
-                                             before.free_words - (frames + frames % 2),
+                                             before.free_words - words_used(frames),
                                              before.total_headers, before.total_words)
         self.on_event({'phase': 'verify_header', 'name': name})
         got = self.read_header(index)
@@ -586,7 +592,7 @@ class MockS2000:
         elif op == 4:
             self.out += self._roster(5, [s['name'] for s in self.samples])
         elif op == 0:
-            used = sum(len(s['pcm']) // 2 for s in self.samples)
+            used = sum(words_used(len(s['pcm']) // 2) for s in self.samples)
             self.out += (bytes([0xF0, 0x47, ADDR, 1, 0x48, 0, 0]) + self._v7(256, 2) + self._v7(256 - len(self.samples), 2)
                          + self._v7(max(2_000_000, self.free_words), 4) + self._v7(self.free_words - used, 4) + b'\0\xF7')
         elif op == 0x0B:
@@ -1137,7 +1143,9 @@ def op_send(sess, items, root, verify=True, progress=lambda m: None, done=None, 
         if prev is not None and it.name.endswith('-R') and prev.name.endswith('-L') and it.name[:-1] == prev.name[:-1]:
             fr = int.from_bytes(sess.last_header[136:138], 'little')
             fl = int.from_bytes(sess.read_header(done[-2]['slot'])[136:138], 'little')
-            linked = 0xFFFF not in (fl, fr) and fl - fr == 12
+            # Both were just sent with no partner, so any value now set came from the S2000 linking this pair.
+            # Adjacency (a gap of 12) is not required: the table can have holes, as op_pairs reports.
+            linked = 0xFFFF not in (fl, fr) and fl != fr
             pairs.append({'left': prev.name, 'right': it.name, 'left_slot': done[-2]['slot'], 'right_slot': idx,
                           'linked': linked, 'left_partner': fl, 'right_partner': fr})
             progress(f'stereo pair {it.name[:-2].strip()!r}: '
@@ -1146,7 +1154,7 @@ def op_send(sess, items, root, verify=True, progress=lambda m: None, done=None, 
     after = sess.inventory()                    # one check of the whole batch
     want = [encode_name(i.name) for i in items]
     if after.programs != first.programs or after.samples != first.samples + want:
-        raise VerifyError('the sample list after the batch is not what was expected (programs changed, or the '
+        raise SendError('the sample list after the batch is not what was expected (programs changed, or the '
                           'new samples are not exactly the ones sent, in order)')
     st = sess.stats
     elapsed = time.monotonic() - t0
@@ -1166,6 +1174,14 @@ class NeedsAttention(Exception):
     """A failed send left the bus/S2000 state uncertain: power-cycle, then recover."""
 
 
+def default_helper():
+    """The s2kexec bus helper: next to this file in a source checkout, otherwise on PATH (`make install`)."""
+    local = os.path.join(os.path.dirname(os.path.abspath(__file__)), 's2kexec')
+    if os.path.exists(local):
+        return local
+    return shutil.which('s2kexec') or '/usr/local/bin/s2kexec'
+
+
 class BusManager:
     """Owns the SCSI bus: one operation at a time, PiSCSI stopped while an operation runs.
 
@@ -1180,7 +1196,7 @@ class BusManager:
         self.target, self.initiator, self.mock = target, initiator, mock
         self.pm = piscsi or PiscsiManager(log=log, mode=restore_mode, state_file=state_file)
         self.last_restore = None
-        self.helper = helper or os.path.join(os.path.dirname(os.path.abspath(__file__)), 's2kexec')
+        self.helper = helper or default_helper()
         self.manage_piscsi, self.keep_bus = manage_piscsi, keep_bus
         self.require_root, self.timeout, self.log = require_root, timeout, log
         self.lock = threading.Lock()
@@ -1212,16 +1228,15 @@ class BusManager:
                 self._timer = None
 
     def _timed_restart(self):
-        self._restoring = True
+        if not self.lock.acquire(blocking=False):
+            return                           # a real operation owns the bus; it schedules its own restart
+        self._restoring = True               # set only while holding the lock, so readers never wait on a real job
         try:
-            if self.lock.acquire(blocking=False):
-                try:
-                    if self.state == 'idle':
-                        self._restore()
-                finally:
-                    self.lock.release()
+            if self.state == 'idle':
+                self._restore()
         finally:
             self._restoring = False
+            self.lock.release()
 
     def _schedule_restart(self):
         if self.mock is not None or not self.manage_piscsi:
@@ -1241,7 +1256,7 @@ class BusManager:
         if self.require_root and os.geteuid() != 0:
             raise SendError('the server must run as root (sudo) to use the GPIO bus')
         if not os.path.exists(self.helper if not isinstance(self.helper, (list, tuple)) else self.helper[-1]):
-            raise SendError(f'bus helper {self.helper} not found: run `make` first')
+            raise SendError(f'bus helper {self.helper} not found: run `make` (and `sudo make install` for an installed server)')
         if self.manage_piscsi:
             if self.pm.active():
                 self.pm.snapshot()                        # remember the attached devices first
@@ -1258,9 +1273,10 @@ class BusManager:
         if self.state == 'needs_attention':
             raise NeedsAttention('a previous send left the bus in an uncertain state: power-cycle the S2000 '
                                  'and the Pi, then POST /v1/recover')
-        if not self.lock.acquire(blocking=False):
+        if not self.lock.acquire(timeout=0.2):
             # A short PiSCSI restart by the keep-bus timer is not a real operation: wait for it. A running
-            # operation (a send job can take minutes) is reported as busy at once.
+            # operation (a send job can take minutes) is reported as busy at once. (The short first wait covers
+            # the moment between the timer taking the lock and setting _restoring.)
             if not (self._restoring and self.lock.acquire(timeout=60)):
                 raise Busy('another operation is using the bus')
         self.state = 'busy'

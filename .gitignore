@@ -2,3 +2,7 @@ __pycache__/
 *.pyc
 /s2kexec
 *.wav
+build/
+dist/
+*.egg-info/
+s2k-data/

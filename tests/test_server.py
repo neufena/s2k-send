@@ -160,6 +160,8 @@ b, s2, c2 = real()
 assert c2.status()['bus']['piscsi'] == 'unmanaged'
 done = c2.send([core.Item('REAL', bytes(range(256)) * 200, 22050, 'r', False)])
 assert done['state'] == 'done' and done['result']['samples'][0]['name'] == 'REAL'      # (each fake helper process starts with a fresh simulated S2000)
+big = c2.send([core.Item('BIGBLOCK', bytes(range(256)) * 600, 44100, 'r', False)], block=32768)
+assert big['state'] == 'done' and big['result']['samples'][0]['name'] == 'BIGBLOCK', big
 s2.shutdown()
 
 b, s2, c2 = real(fail_after=40)                  # bus error during the audio: something may be written
