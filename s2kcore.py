@@ -15,6 +15,7 @@ import contextlib
 import io
 import json
 import math
+import numbers
 import os
 import re
 import select
@@ -36,7 +37,7 @@ MIN_RATE, MAX_RATE = 4000, 65535        # any rate in between is sent as is; the
 
 
 def valid_rate(rate):
-    return isinstance(rate, int) and MIN_RATE <= rate <= MAX_RATE
+    return isinstance(rate, numbers.Integral) and not isinstance(rate, bool) and MIN_RATE <= rate <= MAX_RATE
 
 
 def rate_fields(rate):
@@ -527,7 +528,7 @@ class Session:
                         if field in ('start address (internal)', 'stereo partner') else '  [not critical]'))
         if any(d[5] for d in diffs):
             raise VerifyError('header read back from the S2000 differs in a field that matters '
-                              '(name, length or rate) - see the notes above and the transcript')
+                              '(type, name, length, rate or pitch offset) - see the notes above and the transcript')
         progress(f'header checked (sample slot {index})' + (' with notes above' if diffs else ''))
         if verify_pcm:
             progress('reading audio back to verify')
@@ -750,7 +751,7 @@ def _le_bytes(arr):
 
 
 def source_rate(path):
-    """Sample rate of the source file (wave module first, then soxi), default RATE."""
+    """Sample rate of the source file (wave module first, then soxi), None if it cannot be read."""
     try:
         with wave.open(path, 'rb') as w:
             return w.getframerate()
@@ -762,7 +763,7 @@ def source_rate(path):
             return int(float(r.stdout.strip()))
         except ValueError:
             pass
-    return RATE
+    return None
 
 
 def choose_rate(src, option='auto'):
@@ -770,8 +771,16 @@ def choose_rate(src, option='auto'):
     and nothing lost; anything above to 44.1 kHz). native: keep the source rate (no resampling; the header retunes
     it). A number: resample to that rate."""
     if option == 'auto':
-        return 22050 if src <= 22050 else 44100
-    target = src if option == 'native' else int(option)
+        return RATE if src is None or src > 22050 else 22050
+    if option == 'native':
+        if src is None:
+            raise SendError('cannot read the source sample rate, so it cannot be kept: give --rate HZ instead')
+        target = src
+    else:
+        try:
+            target = int(option)
+        except (TypeError, ValueError):
+            raise SendError(f'unknown rate option {option!r}: use auto, native or a number of Hz') from None
     if not valid_rate(target):
         raise SendError(f'{target} Hz is outside the {MIN_RATE}-{MAX_RATE} Hz the S2000 header can hold')
     return target

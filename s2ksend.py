@@ -124,11 +124,11 @@ def show_check(c, slot, wav):
     for lo, hi, field, _crit in [(f[0], f[1], f[2], f[3]) for f in core.FIELDS]:
         say(f'  bytes {lo:3d}-{hi - 1:3d} {field:26s} {hdr[lo:hi][:24].hex()}{"..." if hi - lo > 24 else ""}')
     say(f'  -> {info["frames"]} frames, rate {info["rate"]} Hz, root {info["root"]}, '
-        f'bandwidth {info["bandwidth"]}, pitch offset {info["tune"]:+.2f} semitones')
+        f'bandwidth {info["bandwidth"]}' + (f', pitch offset {info["tune"]:+.2f} semitones' if 'tune' in info else ''))
     say('  -> stereo partner: none' if info['partner'] is None else
         f'  -> stereo partner field 0x{info["partner"]:04x} (linked; see --pairs for what it points to)')
     if wav:
-        chans, converted, rate = core.load_audio(wav)
+        chans, converted, rate = core.load_audio(wav, rate=str(info['rate']))   # compared at the sample's own rate
         if len(chans) != 1:
             raise core.SendError('that file is stereo: compare each half separately using the NAME-L / NAME-R files '
                                  'the server saved, or pass a mono file')

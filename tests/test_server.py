@@ -235,6 +235,11 @@ rc, out = cli('--check', '1', os.path.join(tmp, 'pad2.wav'))
 assert rc == 0 and 'audio MATCHES the file byte-for-byte' in out and '22050 Hz' in out, out
 rc, out = cli('--download', '1', os.path.join(tmp, 'dl.wav')); assert rc == 0 and os.path.getsize(os.path.join(tmp, 'dl.wav')) > 44, out
 rc, out = cli('--pairs'); assert rc == 0, out
+rc, out = cli('--yes', '--rate', 'native', '--name', 'NAT32', t32 := mkwav('t32.wav', 1, 32000, 0.3))
+assert rc == 0 and 'audio verified byte-for-byte' in out, out
+slot = int(out.split("'NAT32' is in sample slot ")[1].split('.')[0])
+rc, out = cli('--check', str(slot), t32)
+assert rc == 0 and 'rate 32000 Hz' in out and 'pitch offset -5.55' in out and 'MATCHES the file byte-for-byte' in out, out
 rc, out = cli('--yes', k)                                   # KICK already exists on the simulated S2000
 assert rc == 1 and 'FAILED (send_failed)' in out and out.count('already on the S2000') == 1 and 'Not completed: KICK' in out, out
 failed_id = out.split('s2ksend --fetch-job ')[1].split()[0]               # the failure says how to fetch the evidence

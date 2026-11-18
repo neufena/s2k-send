@@ -34,6 +34,7 @@ All notable changes to this project are recorded here. The format follows
 - A read no longer waits up to 60 s when the keep-bus restart timer fires during a send.
 
 ### Removed
+- `s2kcore.RATES`: use `s2kcore.valid_rate()`.
 - `tests/test_physical.py`, which targeted the pre-0.7 single-file tool. Its 32 KB block case moved to `tests/test_server.py`.
 
 ## [0.8.0] - 2026-11-18

@@ -28,7 +28,8 @@ assert s.header_diffs(h22, h22) == []
 assert [s.choose_rate(r) for r in (8000, 11025, 22050, 32000, 44100, 48000, 96000)] == [22050]*3 + [44100]*4
 assert s.choose_rate(48000, '22050') == 22050 and s.choose_rate(11025, '44100') == 44100
 assert s.choose_rate(32000, 'native') == 32000 and s.choose_rate(48000, '32000') == 32000
-for src, opt in ((96000, 'native'), (2000, 'native'), (44100, '70000')):
+assert s.choose_rate(None) == 44100                              # unreadable source rate: auto still works
+for src, opt in ((96000, 'native'), (2000, 'native'), (44100, '70000'), (None, 'native'), (44100, '44.1k'), (44100, None)):
     try: s.choose_rate(src, opt); raise SystemExit(f'{src} {opt} not rejected')
     except s.SendError: pass
 
