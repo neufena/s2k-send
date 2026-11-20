@@ -105,7 +105,7 @@ its folder on the Pi is deleted too, so fetch its audio soon after it finishes; 
 **SSE** (`/events`): events `log` (`{n, t, msg}`), `progress`, `state` (`{state}`), then `end` (`{result, error}`),
 plus `: keep-alive` comments.
 
-## Evidence kept on the Pi (`--data-dir`, default `./s2k-data/jobs/<id>/`)
+## Evidence kept on the Pi (`--data-dir`, default `/var/lib/s2k-send/jobs/<id>/`)
 `NAME.wav` is exactly the audio that was sent (for a download job, the audio that was read); `transcript.log` has every SCSI command; `NAME-expected.pcm` and
 `NAME-readback.pcm` appear if a read-back comparison failed.
 

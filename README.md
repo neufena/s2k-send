@@ -32,8 +32,8 @@ See [CHANGELOG.md](CHANGELOG.md) for the version history.
 * Current Raspberry Pi OS (Trixie, Python 3.13). Older releases are not supported.
 * A PiSCSI board that supports initiator mode (FULLSPEC board, or direct wiring without transceivers). The S2000 Bridge project
   page says it was tested with a Raspberry Pi 3 and a RaSCSI v2.3B; other Pi models and boards are untested here.
-* S2000 at SCSI ID 6. The Pi becomes the initiator, default ID 7, so **power off or disconnect any other initiator using ID 7**
-  (or pass `--initiator N`).
+* S2000 at SCSI ID 6. The Pi becomes the initiator, default ID 0, so **reserve ID 0 in PiSCSI** (no emulated device on it) and
+  **power off or disconnect any other initiator using it** (or pass `--initiator N`).
 * While an operation runs, `piscsi` is stopped: the Pi's emulated disks vanish, then come back `--keep-bus` seconds later **with the
   same setup as before** (see below).
 
@@ -48,7 +48,7 @@ See [CHANGELOG.md](CHANGELOG.md) for the version history.
     sudo /opt/s2k-send/bin/s2kserver                      # listens on :8420
 To start it at boot, follow the header of [s2k-server.service](s2k-server.service).
 
-Options: `--target 6 --initiator 7 --data-dir DIR --helper PATH --no-manage-piscsi --keep-bus SECS --restore-piscsi exact|attach-only|off`.
+Options: `--target 6 --initiator 0 --data-dir DIR --helper PATH --no-manage-piscsi --keep-bus SECS --restore-piscsi exact|attach-only|off`.
 `--mock` runs against a simulated S2000, with no hardware and no root, for developing clients.
 
 ### Client (any computer with Python 3.13 or later)
@@ -72,6 +72,7 @@ sox is needed only for audio that is not already 16-bit WAV at 44.1 or 22.05 kHz
     s2ksend --rehearse-only kick.wav loop.wav             # plan and rehearse locally, server not contacted
     s2ksend --jobs                                        # recent send jobs
     s2ksend --fetch-job ID [FOLDER]                       # save a job's transcript and audio sent (after a failure, say)
+Where `.local` names don't resolve (e.g. in a container), use the Pi's IP address instead.
 Every send: load and plan locally -> upload -> server rehearsal -> you confirm -> transfer with live progress -> verify.
 
 ### Names, rates and stereo
@@ -120,7 +121,7 @@ Samples live only in the S2000's RAM: save them to disk on the sampler to keep t
 | `list_mismatch` | Samples were sent and verified but the S2000's list changed unexpectedly. Power-cycle, `--recover`, then `--list`. |
 | `bus helper ... not found` | Run `sudo make install` (or `make` in a checkout). |
 | Emulated disks missing after a job | Wait `--keep-bus` seconds, then check `--status` and `--piscsi`. |
-| No answer from the S2000 | Another initiator on ID 7, wrong `--target`, SCSI-MIDI left on after a failure, or the board is not in initiator mode. |
+| No answer from the S2000 | Another initiator or a PiSCSI device on the Pi's ID (0 by default), wrong `--target`, SCSI-MIDI left on after a failure, or the board is not in initiator mode. |
 
 ## Technical notes
 * The S2000 stores a sent stereo-partner field of `0000` as `ffff` (none) and fills in the sample's internal start address itself, so

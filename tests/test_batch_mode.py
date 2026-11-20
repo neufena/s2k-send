@@ -1,5 +1,6 @@
 #!/usr/bin/env python3
-"""Batch-mode inventory (read once before and once after the batch), stereo link report, and the busy-wait."""
+"""Batch-mode inventory (full list before and after the batch, sample list after each sample), free header entries,
+stereo link report, and the busy-wait."""
 import os, sys, threading, time
 sys.path.insert(0, os.path.join(os.path.dirname(os.path.abspath(__file__)), '..'))
 import s2kcore as core
@@ -21,11 +22,23 @@ sess2 = core.Session(core.MockBus(mock2), lambda m: None)
 sess2.preflight([i.name for i in items], [len(i.pcm) // 2 for i in items])
 for it in items:
     sess2.send_sample(it.name, 60, it.pcm, True, rate=it.rate)             # old behaviour: inventory after each
-assert batch_cmds <= sess2.commands - 15 * (len(items) - 1) + 15, (batch_cmds, sess2.commands)   # saves 15 per sample after the first, pays 15 for the pair check
+# saves 10 per sample (sample list only), pays 15 for the final full check and 15 for the pair check
+assert batch_cmds <= sess2.commands - 10 * len(items) + 30, (batch_cmds, sess2.commands)
 assert [s['slot'] for s in res['samples']] == [2, 3, 4, 5]
 assert [(core.decode_name(s['name']).strip(), s['pcm'] == i.pcm) for s, i in zip(mock.samples[2:], items)] == [(i.name.strip(), True) for i in items]
 # the free-memory bookkeeping used between samples matches the (simulated) S2000
 assert mock.samples[5]['header'][26:30] == (9000).to_bytes(4, 'little')
+
+# --- a sample deleted on the S2000 leaves a free header entry; the next new sample fills it (seen on hardware,
+# job 20261120-135451-9a01db) and moves the later samples up one, so batch slots are not "append in order"
+holes = core.MockS2000(samples=['A', None, 'C', 'D'], free_words=1_000_000)
+_, _, res7 = run(lambda s: core.op_send(s, items, 60), holes)
+assert [s['slot'] for s in res7['samples']] == [1, 4, 5, 6], res7['samples']
+assert [core.decode_name(s['name']).strip() for s in holes.live()] == ['A', 'KICK', 'C', 'D', 'SNARE', 'LOOP      -L', 'LOOP      -R']
+two_holes = core.MockS2000(samples=['A', None, 'C', None, 'E'], free_words=1_000_000)
+_, _, res8 = run(lambda s: core.op_send(s, items[2:], 60), two_holes)
+assert [s['slot'] for s in res8['samples']] == [1, 3] and res8['pairs'][0]['linked'], res8
+assert (res8['pairs'][0]['left_slot'], res8['pairs'][0]['right_slot']) == (1, 3)
 
 # --- the S2000 links the -L/-R pair by itself; the report says so
 assert len(res['pairs']) == 1 and res['pairs'][0]['linked'] and res['pairs'][0]['left_partner'] - res['pairs'][0]['right_partner'] == 12

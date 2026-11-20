@@ -516,10 +516,14 @@ class Session:
                 raise SendError('inventory after the transfer is not what was expected')
             index = after.samples.index(enc)
         else:
-            # Batch mode: the new sample is appended, so its slot is the old count. The header read-back below
-            # checks the NAME at that slot; the caller re-reads the whole list once at the end of the batch.
-            index = len(before.samples)
-            self.inventory_after = Inventory(before.programs, before.samples + [enc], before.free_headers - 1,
+            # Batch mode: read only the sample list to find the new sample. The S2000 puts it in the first free
+            # header entry, which after a deletion on the S2000 is not the end of the list (seen 20 Nov 2026).
+            # The caller checks the programs once, at the end of the batch.
+            samples = parse_roster(self.control(LIST_SAMPLES, 'data'), True)
+            if enc not in samples or [s for s in samples if s != enc] != before.samples:
+                raise ListMismatch('the sample list after the transfer is not the old list plus the new sample')
+            index = samples.index(enc)
+            self.inventory_after = Inventory(before.programs, samples, before.free_headers - 1,
                                              before.free_words - words_used(frames),
                                              before.total_headers, before.total_words)
         self.on_event({'phase': 'verify_header', 'name': name})
@@ -548,7 +552,11 @@ class MockS2000:
     proof of how real hardware behaves."""
 
     def __init__(self, samples=(), free_words=1_000_000):
-        self.samples = [dict(name=encode_name(n), header=bytes(SAMPLE_TEMPLATE), pcm=b'') for n in samples]
+        # The internal header table: None is a free entry (left by a sample deleted on the S2000). The sample list
+        # is the table in order without the free entries, and a new sample takes the first free entry, as the real
+        # S2000 was seen to do (20 Nov 2026), so it is not always added at the end.
+        self.samples = [None if n is None else dict(name=encode_name(n), header=bytes(SAMPLE_TEMPLATE), pcm=b'')
+                        for n in samples]
         self.programs = []
         self.free_words = free_words
         self.scsi = False
@@ -558,6 +566,9 @@ class MockS2000:
         self.pending = None
         self.pcm_in = None
         self.pcm_out = None
+
+    def live(self):
+        return [s for s in self.samples if s is not None]
 
     @staticmethod
     def _v7(n, count):
@@ -604,17 +615,18 @@ class MockS2000:
     def _entry_address(slot):
         return (0x6018 + 12 * slot).to_bytes(2, 'little')        # a table of 12-byte entries (no holes in this model)
 
-    def _autolink(self, slot):
+    def _autolink(self, entry):
         """What the real S2000 was seen to do: a '-R' sample arriving after a '-L' sample with the same name start
         gets paired with it: each header's partner field becomes the address of the other's entry."""
-        new = decode_name(self.samples[slot]['name'])
+        new = decode_name(self.samples[entry]['name'])
         if not new.endswith('-R'):
             return
-        for i, smp in enumerate(self.samples[:slot]):
-            if decode_name(smp['name'])[:-1] == new[:-1] and decode_name(smp['name']).endswith('L'):
-                hl, hr = bytearray(smp['header']), bytearray(self.samples[slot]['header'])
-                hl[136:138], hr[136:138] = self._entry_address(slot), self._entry_address(i)
-                smp['header'], self.samples[slot]['header'] = bytes(hl), bytes(hr)
+        for i, smp in enumerate(self.samples):
+            if smp is not None and i != entry and decode_name(smp['name'])[:-1] == new[:-1] \
+                    and decode_name(smp['name']).endswith('L'):
+                hl, hr = bytearray(smp['header']), bytearray(self.samples[entry]['header'])
+                hl[136:138], hr[136:138] = self._entry_address(entry), self._entry_address(i)
+                smp['header'], self.samples[entry]['header'] = bytes(hl), bytes(hr)
                 return
 
     def _roster(self, op, names):
@@ -628,16 +640,16 @@ class MockS2000:
         if op == 2:
             self.out += self._roster(3, self.programs)
         elif op == 4:
-            self.out += self._roster(5, [s['name'] for s in self.samples])
+            self.out += self._roster(5, [s['name'] for s in self.live()])
         elif op == 0:
-            used = sum(words_used(len(s['pcm']) // 2) for s in self.samples)
-            self.out += (bytes([0xF0, 0x47, ADDR, 1, 0x48, 0, 0]) + self._v7(256, 2) + self._v7(256 - len(self.samples), 2)
+            used = sum(words_used(len(s['pcm']) // 2) for s in self.live())
+            self.out += (bytes([0xF0, 0x47, ADDR, 1, 0x48, 0, 0]) + self._v7(256, 2) + self._v7(256 - len(self.live()), 2)
                          + self._v7(max(2_000_000, self.free_words), 4) + self._v7(self.free_words - used, 4) + b'\0\xF7')
         elif op == 0x0B:
             if not self.bulk:
                 raise SendError('mock: sample header outside bulk mode')
             ident = f[5] | (f[6] << 7)
-            if ident != len(self.samples):
+            if ident != len(self.live()):
                 raise SendError('mock: sample identifier is not the next free slot')
             header = unnibbles(f[7:-1])
             if len(header) != 192:
@@ -649,7 +661,7 @@ class MockS2000:
             h = bytearray(header)                          # what the real S2000 was seen to do (16 Nov 2026):
             if h[136:138] == b'\x00\x00':                  # it stores 'no stereo partner' as ffff
                 h[136:138] = b'\xff\xff'
-            h[22:26] = (0x10000 + 0x4000 * len(self.samples)).to_bytes(4, 'little')    # internal start address
+            h[22:26] = (0x10000 + 0x4000 * len(self.live())).to_bytes(4, 'little')     # internal start address
             header = bytes(h)
             self.pending, self.pcm_in = header, bytearray()
             self.out += bytes([0xF0, 0x7E, ADDR, 0x7C, 0, 0xF7])         # WAIT first, then ACK
@@ -659,20 +671,26 @@ class MockS2000:
                 raise SendError('mock: post without a sample')
             if len(self.pcm_in) != int.from_bytes(self.pending[26:30], 'little') * 2:
                 raise SendError('mock: PCM length differs from header')
-            self.samples.append(dict(name=bytes(self.pending[3:15]), header=self.pending, pcm=bytes(self.pcm_in)))
-            self._autolink(len(self.samples) - 1)
+            new = dict(name=bytes(self.pending[3:15]), header=self.pending, pcm=bytes(self.pcm_in))
+            if None in self.samples:
+                entry = self.samples.index(None)
+                self.samples[entry] = new
+            else:
+                entry = len(self.samples)
+                self.samples.append(new)
+            self._autolink(entry)
             self.pending = self.pcm_in = None
             self.out += ACK
         elif op == 43:
             idx, off = f[5] | (f[6] << 7), f[8] | (f[9] << 7)
-            part = self.samples[idx]['header'][off:off + 64]
+            part = self.live()[idx]['header'][off:off + 64]
             self.out += bytes([0xF0, 0x47, ADDR, 44, 0x48, f[5], f[6], 0, f[8], f[9], 64, 0]) + nibbles(part) + b'\xF7'
         elif op == 12:
             idx = f[5] | (f[6] << 7)
             size = sum(f[11 + i] << (7 * i) for i in range(4))
-            if size * 2 != len(self.samples[idx]['pcm']):
+            if size * 2 != len(self.live()[idx]['pcm']):
                 raise SendError('mock: PCM read size (count is in words)')
-            self.pcm_out = self.samples[idx]['pcm']
+            self.pcm_out = self.live()[idx]['pcm']
         else:
             raise SendError(f'mock: unsupported SysEx opcode {op:#x}')
 
@@ -1168,12 +1186,18 @@ def wav_bytes(pcm, rate):
     return buf.getvalue()
 
 
+def _update_slots(done, samples):
+    for d in done:
+        d['slot'] = samples.index(encode_name(d['name']))
+
+
 def op_send(sess, items, root, verify=True, progress=lambda m: None, done=None, sent_dir=None):
     """Send a batch. `done` (a list the caller owns) receives {'name', 'slot'} as each sample completes,
     so a failure part-way still tells the caller what is already in the S2000's RAM.
 
-    The sample list is read once before and once after the whole batch (not after every sample); each sample's
-    name is checked at its slot by the header read-back. When a '-L' sample is followed by the matching '-R' the
+    Programs and free space are read once before and once after the whole batch. After each sample only the
+    sample list is read, to find its slot: the S2000 fills a free header entry first, so a new sample is not always
+    at the end, and it moves the samples after it up one. Slots in `done` are kept current. When a '-L' sample is followed by the matching '-R' the
     S2000 links the two as a stereo pair by itself; its partner fields are read back to confirm."""
     done = [] if done is None else done
     total = sum(len(i.pcm) for i in items)
@@ -1189,6 +1213,7 @@ def op_send(sess, items, root, verify=True, progress=lambda m: None, done=None, 
         idx = sess.send_sample(it.name, root if it.root is None else it.root, it.pcm, verify,
                                progress=progress, rate=it.rate, refresh_inventory=False)
         done.append({'name': it.name, 'slot': idx})
+        _update_slots(done, sess.inventory_after.samples)        # a sample filling a free entry moves later ones up
         progress(f'DONE: {it.name!r} is in sample slot {idx}.')
         prev = items[n - 2] if n >= 2 else None
         if prev is not None and it.name.endswith('-R') and prev.name.endswith('-L') and it.name[:-1] == prev.name[:-1]:
@@ -1203,10 +1228,14 @@ def op_send(sess, items, root, verify=True, progress=lambda m: None, done=None, 
                      + ('linked by the S2000 (partner fields 0x%04x / 0x%04x)' % (fl, fr) if linked else
                         'NOT linked (partner fields 0x%04x / 0x%04x)' % (fl, fr)))
     after = sess.inventory()                    # one check of the whole batch
-    want = [encode_name(i.name) for i in items]
-    if after.programs != first.programs or after.samples != first.samples + want:
+    want = {encode_name(i.name) for i in items}
+    if after.programs != first.programs or [s for s in after.samples if s not in want] != first.samples \
+            or not want <= set(after.samples):
         raise ListMismatch('the sample list after the batch is not what was expected (programs changed, or the '
-                          'new samples are not exactly the ones sent, in order)')
+                          'new samples are not exactly the ones sent)')
+    _update_slots(done, after.samples)
+    for p in pairs:
+        p['left_slot'], p['right_slot'] = (after.samples.index(encode_name(p[k])) for k in ('left', 'right'))
     st = sess.stats
     elapsed = time.monotonic() - t0
     return {'samples': done, 'pairs': pairs, 'commands': sess.commands, 'audio_bytes': total,
@@ -1242,7 +1271,7 @@ class BusManager:
     does not stop/restart PiSCSI every time. mock: a MockS2000 to use instead of hardware (development).
     """
 
-    def __init__(self, target=6, initiator=7, helper=None, manage_piscsi=True, keep_bus=20.0, mock=None,
+    def __init__(self, target=6, initiator=0, helper=None, manage_piscsi=True, keep_bus=20.0, mock=None,
                  require_root=True, timeout=1, log=lambda m: None, restore_mode='exact', state_file=None, piscsi=None):
         self.target, self.initiator, self.mock = target, initiator, mock
         self.pm = piscsi or PiscsiManager(log=log, mode=restore_mode, state_file=state_file)
@@ -1391,7 +1420,7 @@ def rehearse(items, root, verify, say, block=PCM_BLOCK):
     sess.preflight([i.name for i in items], [len(i.pcm) // 2 for i in items])
     for it in items:
         idx = sess.send_sample(it.name, root if it.root is None else it.root, it.pcm, verify, rate=it.rate)
-        if m.samples[idx]['pcm'] != it.pcm or idx != len(m.samples) - 1:
+        if m.live()[idx]['pcm'] != it.pcm:
             raise SendError('rehearsal: audio mismatch')
     say(f'rehearsal OK ({sess.commands} commands against the simulated S2000)')
     return sess.commands

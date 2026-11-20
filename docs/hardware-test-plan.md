@@ -6,7 +6,7 @@ then sends. Record each result in the table at the end, with the job ID for any 
 After any failed send, before anything else: `s2ksend --fetch-job ID` to keep the transcript and the audio sent.
 
 ## Before starting
-* Any other initiator on SCSI ID 7 (the Mac) powered off or disconnected.
+* Any other initiator on the bus (the Mac) powered off or disconnected, and SCSI ID 0 (the Pi's) reserved in PiSCSI.
 * Nothing on the S2000 that needs saving: samples are added to RAM, and a failure may need a power-cycle.
 * Test files on the client: `kick.wav` (mono), `loop.wav` (stereo), and about 15 short mono WAVs for the large batch.
 * Note the devices PiSCSI has attached (web UI) so they can be compared after each restart.
@@ -58,8 +58,9 @@ send each with `--rate native`: `s2ksend t32.wav --rate native --name T32 --yes`
 Batch mode assumes the S2000 adds each new sample at the end of its list, in the order sent.
 1. Send about 15 short files in one run. Expect every sample verified and the final list check to pass.
 2. Delete one sample in the **middle** of the S2000's list (on the S2000 itself), then send a batch of 3 more.
-3. Expect the batch to pass. If it fails with `list_mismatch` or a header check on the wrong slot, the S2000 filled the
-   gap rather than appending: record which slots the new samples took (`s2ksend --list`) and fetch the job.
+3. Expect the batch to pass, with the first new sample in the deleted sample's slot (the S2000 fills the free header
+   entry and moves the later samples up one) and the reported slots matching `s2ksend --list`. If it fails, record
+   which slots the new samples took and fetch the job.
 
 ## 7. Stereo linking
 1. `s2ksend loop.wav --name LOOP2 --yes`: expect `linked by the S2000` (the known-good case, as a baseline).
@@ -80,16 +81,21 @@ Install the systemd unit (header of `s2k-server.service`), reboot the Pi, then `
 Run AKAISDS's own plan (`tests/s2k_test_plan.md` in that repo) against the same server.
 
 ## Results (20/11/2026)
+Server and client at `7e773c9` (0.9.0.dev0). Client ran from the devcontainer, over the Pi's IP.
+
 | Step | Result | Job ID / numbers | Notes |
 | --- | --- | --- | --- |
-| 1 Install | | | |
-| 2 Read-only | | | |
-| 3 PiSCSI restore / keep-bus | | | |
-| 4 Block 16384 / 32768 | | write KB/s: / ; verify KB/s: / | |
-| 5 22.05 kHz | | | |
-| 5b Other rates (32k / 11.025k / 48k) | | pitch offsets: / / | |
-| 6 Large batch / gap | | | |
-| 7 Stereo R-before-L / in between | | | |
-| 8 Download | | | |
-| 9 Service | | | |
+| 1 Install | Pass | | Server from README on the Pi. Client in a devcontainer venv (`pip install .`), not pipx: host Python is 3.12. mDNS (`piscsi.local`) doesn't resolve in the container, so `S2K_SERVER` used the IP. |
+| 2 Read-only | Pass | | First `--probe` failed (`no response from target`) because the S2000 had not booted properly; fine after a restart. 4 default samples, 1 program, 33.4 MB free. `--list` reports 2 more headers in use than samples listed (6 vs 4 at the start). |
+| 3 PiSCSI restore / keep-bus | Pass | | 40/40 `--list` ok over about 40 s. Restore put back all 3 devices, including one added in the web UI before the run. |
+| 4 Block 16384 / 32768 | Pass | KICKA `20261120-133457-212aee`, KICKB `20261120-133500-957c1f`; write KB/s: 187.6 / 240.6; verify KB/s: 335.7 / 338.0 | Both verified byte-for-byte and play. Transcript has `t=` and `dt=` on all 63 commands; dt median 40.6 ms, max 180.7 ms. |
+| 5 22.05 kHz | Pass | KICK22 in slot 6; write 154.0 KB/s, verify 235.8 KB/s | `--check`: bandwidth 0, 22050 Hz. Same pitch as KICKA, duller. |
+| 5b Other rates (32k / 11.025k / 48k) | Pass | pitch offsets: -5.55 / -12.00 / +1.47 | Verified byte-for-byte; bandwidth 1 / 0 / 1. Same pitch as 44.1 kHz by ear. `--download` of T32 gave a 32 kHz WAV (75.4 KB/s). |
+| 6 Large batch / gap | 15-file batch pass; **gap case fails** | batch `20261120-135036-bedd20`; failed `20261120-135451-9a01db` | 15 samples in slots 10-24, in order, 22.5 s. After deleting B05 (slot 14) on the S2000, the first of 3 new samples took slot 14 and moved the later ones up one. The batch expected it at the end, read the wrong header and failed `verify_failed`. N01 correct at slot 14; N02/N03 not sent; bus idle. The S2000 fills the gap, so batch slots are not "append in order". |
+| 7 Stereo R-before-L / in between | Pass | | LOOP2, LOOP3 (R before L) and LOOP4 (KICKX between) all linked. Partner field = 0x6018 + 12 x partner slot for all three. |
+| 8 Download | Pass | KICKA 22.4 KB/s; LOOP2 -L 144.4 KB/s (326 KB) | Progress to 100%; `--check` audio matches. |
+| 9 Service | Pass | | Unit enabled, active, NRestarts=0, listening 1 s after start. PiSCSI restore after the reboot works. A device added in the web UI is not there after the reboot (PiSCSI's own startup config). `--jobs` empty: the service uses a new `--data-dir`. |
+| 6 re-test with the fix (`ab33052`, PR 7) | Pass | `20261120-144424-4ebbcb` | Pi at SCSI initiator ID 0. After deleting B07 (slot 16): N02 filled it (slot 16, later samples up one), N03 went to the end (32), and a stereo LOOP5 pair (33/34) linked. Every reported slot matches `--list`; final list check passed; 13.0 s, write 227.4 KB/s, verify 403.9 KB/s. `--list \| head` no longer prints a traceback. |
 | 10 AKAISDS | | | |
+
+Also seen: `--list` and `--jobs` print a `BrokenPipeError` traceback when piped into `head` (fixed in PR 7, checked on the real server).
