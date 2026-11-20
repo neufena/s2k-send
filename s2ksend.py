@@ -109,7 +109,7 @@ def show_list(c):
     inv = c.samples()
     used = (inv['total_headers'] - inv['free_headers']) if inv.get('total_headers') else None
     say(f'{len(inv["samples"])} samples, {len(inv["programs"])} programs; free: {inv["free_words"]} words '
-        f'({inv["free_words"] * 2 / 1e6:.1f} MB), {inv["free_headers"]} of {inv.get("total_headers", "?")} sample headers'
+        f'({inv["free_words"] * 2 / 1e6:.1f} MB), {inv["free_headers"]} of {inv.get("total_headers", "?")} headers'
         + (f' ({used} in use)' if used is not None else ''))
     for s in inv['samples']:
         say(f'  {s["slot"]:3d}  {s["name"]!r}')
@@ -309,6 +309,10 @@ def main(argv=None):
         return 0
     except (S2KError, core.SendError) as e:
         say(f'STOP: {e.message if isinstance(e, S2KError) else e}')
+        return 1
+    except BrokenPipeError:
+        # The reader (e.g. head) has exited. Point stdout at /dev/null so the flush at exit does not fail too.
+        os.dup2(os.open(os.devnull, os.O_WRONLY), sys.stdout.fileno())
         return 1
 
 
