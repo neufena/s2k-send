@@ -596,7 +596,7 @@ def main(argv=None):
     ap.add_argument('--host', default='0.0.0.0')
     ap.add_argument('--port', type=int, default=8420)
     ap.add_argument('--target', type=int, default=6, help='S2000 SCSI ID (default 6)')
-    ap.add_argument('--initiator', type=int, default=7, help="the Pi's SCSI ID (default 7; the Mac must be off)")
+    ap.add_argument('--initiator', type=int, default=0, help="the Pi's SCSI ID (default 0; reserve it in PiSCSI; the Mac must be off)")
     ap.add_argument('--helper', default=None,
                     help='path to the s2kexec bus helper (default: next to s2kcore.py, then PATH)')
     ap.add_argument('--no-manage-piscsi', action='store_true',
@@ -606,11 +606,12 @@ def main(argv=None):
     ap.add_argument('--restore-piscsi', choices=['exact', 'attach-only', 'off'], default='exact',
                     help="after restarting PiSCSI put its device setup back as it was: 'exact' (attach what is missing, "
                          "detach what was not there before), 'attach-only', or 'off' (just restart, as before)")
-    ap.add_argument('--data-dir', default='s2k-data', help='where job transcripts, the exact audio sent and the '
-                                                           'PiSCSI setup snapshot are kept')
+    ap.add_argument('--data-dir', help='where job transcripts, the exact audio sent and the PiSCSI setup snapshot are '
+                                       'kept (default /var/lib/s2k-send, as the systemd unit; ./s2k-data with --mock)')
     ap.add_argument('--mock', action='store_true', help='simulated S2000, no hardware (for developing clients)')
     ap.add_argument('--mock-samples', default='', help='comma-separated names already in the simulated S2000')
     a = ap.parse_args(argv)
+    a.data_dir = a.data_dir or ('s2k-data' if a.mock else '/var/lib/s2k-send')
     log = lambda m: sys.stderr.write(f'[bus] {m}\n')
     mock = None
     if a.mock:

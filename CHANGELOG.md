@@ -23,10 +23,19 @@ All notable changes to this project are recorded here. The format follows
 
 ### Changed
 - Requires Python 3.13 or later (current Raspberry Pi OS); older releases are not supported.
+- `s2kserver --data-dir` defaults to `/var/lib/s2k-send`, as the systemd unit uses, so jobs and the PiSCSI snapshot are
+  shared between a server started by hand and the service (`./s2k-data` with `--mock`).
+- After each sample in a batch the sample list is read (about 5 commands) to find its slot; programs and free space are
+  still read only before and after the batch.
+- `--list` says "headers" rather than "sample headers": the S2000's count includes more than samples.
 - `run_tests.sh` exits non-zero when a test fails.
 - The systemd unit runs the installed `s2kserver` command.
 
 ### Fixed
+- A batch sent after a sample was deleted on the S2000 failed `verify_failed`: the S2000 puts a new sample in the first
+  free header entry, not at the end of the list, and moves the samples after it up one. Batch mode now finds each new
+  sample by name, and reported slots are the final ones (found on hardware, 20/11/2026).
+- `s2ksend` no longer prints a `BrokenPipeError` traceback when its output is piped into `head`.
 - Sample memory is counted in even numbers of words, as the S2000 allocates it, so a batch that does not fit is refused
   before anything is written instead of failing part-way.
 - A sample list that is wrong after a batch has written now leaves the bus in `needs_attention` instead of idle.
