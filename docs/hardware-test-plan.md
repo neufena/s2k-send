@@ -95,6 +95,7 @@ Server and client at `7e773c9` (0.9.0.dev0). Client ran from the devcontainer, o
 | 7 Stereo R-before-L / in between | Pass | | LOOP2, LOOP3 (R before L) and LOOP4 (KICKX between) all linked. Partner field = 0x6018 + 12 x partner slot for all three. |
 | 8 Download | Pass | KICKA 22.4 KB/s; LOOP2 -L 144.4 KB/s (326 KB) | Progress to 100%; `--check` audio matches. |
 | 9 Service | Pass | | Unit enabled, active, NRestarts=0, listening 1 s after start. PiSCSI restore after the reboot works. A device added in the web UI is not there after the reboot (PiSCSI's own startup config). `--jobs` empty: the service uses a new `--data-dir`. |
+| 6 re-test with the fix (`ab33052`, PR 7) | Pass | `20261120-144424-4ebbcb` | Pi at SCSI initiator ID 0. After deleting B07 (slot 16): N02 filled it (slot 16, later samples up one), N03 went to the end (32), and a stereo LOOP5 pair (33/34) linked. Every reported slot matches `--list`; final list check passed; 13.0 s, write 227.4 KB/s, verify 403.9 KB/s. `--list \| head` no longer prints a traceback. |
 | 10 AKAISDS | | | |
 
-Also seen: `--list` and `--jobs` print a `BrokenPipeError` traceback when piped into `head`.
+Also seen: `--list` and `--jobs` print a `BrokenPipeError` traceback when piped into `head` (fixed in PR 7, checked on the real server).
