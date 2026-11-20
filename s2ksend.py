@@ -59,7 +59,7 @@ def build_parser():
     ap.add_argument('--check', type=int, metavar='SLOT',
                     help='READ-ONLY: show the header of the sample in SLOT; with a WAV, also compare the audio')
     ap.add_argument('--download', type=int, metavar='SLOT', help='READ-ONLY: save the sample in SLOT as WAV (give the file name)')
-    ap.add_argument('--jobs', action='store_true', help='list recent send jobs')
+    ap.add_argument('--jobs', action='store_true', help='list recent send and download jobs')
     ap.add_argument('--fetch-job', metavar='ID',
                     help="save a job's evidence (audio sent, transcript, mismatch dumps) into a folder (default s2k-job-ID)")
     ap.add_argument('--recover', action='store_true',
@@ -173,6 +173,18 @@ def show_pairs(c):
             f'field = 0x{rule["base"]:04x} + {rule["stride"]} x slot of the partner')
 
 
+def download_progress():
+    shown = [-1]
+
+    def show(p):
+        if p.get('phase') == 'download' and p.get('total'):
+            pct = p['done'] * 100 // p['total']
+            if pct // 10 > shown[0]:
+                shown[0] = pct // 10
+                say(f'  reading audio: {pct}% ({p["done"] / 1000:.0f} of {p["total"] / 1000:.0f} KB)')
+    return show
+
+
 def fetch_job(c, job_id, folder):
     files = c.job_files(job_id)
     os.makedirs(folder, exist_ok=True)
@@ -271,16 +283,18 @@ def main(argv=None):
         elif a.download is not None:
             if len(a.wavs) != 1:
                 ap.error('--download SLOT needs exactly one output file name')
-            info, wav = c.sample_audio(a.download, 'wav')
+            info, wav = c.download(a.download, 'wav', on_progress=download_progress())
             with open(a.wavs[0], 'wb') as f:
                 f.write(wav)
-            say(f'saved slot {a.download} {info["name"]!r} ({info["frames"]} frames, {info["rate"]} Hz) to {a.wavs[0]}')
+            say(f'saved slot {a.download} {info["name"]!r} ({info["frames"]} frames, {info["rate"]} Hz) to {a.wavs[0]}'
+                f' (read in {info["elapsed_s"]} s, {info["read_kbps"]} KB/s)')
         elif a.jobs:
             if a.wavs:
                 ap.error('--jobs takes no file names')
             for j in c.jobs():
                 created = time.strftime('%d/%m/%Y %H:%M:%S', time.localtime(j['created']))
-                say(f'{j["id"]}  {j["state"]:9s}  {j["samples"]} sample(s)  created {created}')
+                what = f'{j["samples"]} sample(s)' if j.get('kind', 'send') == 'send' else 'download'
+                say(f'{j["id"]}  {j.get("kind", "send"):8s}  {j["state"]:9s}  {what:12s}  created {created}')
         elif a.fetch_job:
             if len(a.wavs) > 1:
                 ap.error('--fetch-job ID takes at most one folder name')

@@ -35,7 +35,7 @@ Default address `http://<pi>:8420`. All endpoints are under `/v1/`. CORS is open
 |---|---|
 | `GET /v1/samples` | `{samples: [{slot, name}], programs: [name], free_headers, total_headers, free_words, total_words}` (memory in 16-bit words; bytes = x2) |
 | `GET /v1/samples/{slot}` | `{slot, name, frames, rate, root, bandwidth, tune, playback, partner, header_hex}` (`tune`: pitch offset in semitones); `partner` is `null` when unpaired (field `0xffff`), else the raw 16-bit value |
-| `GET /v1/samples/{slot}/audio?format=wav\|pcm` | the sample's audio (default WAV). Headers `X-S2K-Name`, `X-S2K-Rate`, `X-S2K-Frames`, `X-S2K-Root` |
+| `GET /v1/samples/{slot}/audio?format=wav\|pcm` | the sample's audio (default WAV), in one blocking request with no progress. Headers `X-S2K-Name`, `X-S2K-Rate`, `X-S2K-Frames`, `X-S2K-Root`. For progress, use a download job (below) |
 | `GET /v1/pairs` | `{samples, pairs: [{left: {slot, name, partner}, right: {...}, linked}], rule: {stride, base, consistent, notes} \| null, layout: {pairs, spacing, spacing_consistent, holes: [{before_slot, entries}], extra_entries, first_address, last_address} \| null}`: finds `-L`/`-R` pairs, decodes their stereo-partner fields, and reports the entry spacing and gaps those addresses imply |
 
 ## Sending: jobs
@@ -87,11 +87,26 @@ simulated S2000), then start it.
 * After `failed`, `error.done` lists samples already in the S2000's RAM (with slots) and `not_completed` those that are
   not (the one being sent when it stopped may be partly there).
 
+## Receiving with progress: download jobs
+1. `POST /v1/samples/{slot}/download` returns `202` with a job (`kind: download`, `slot`, `state: queued`). It is
+   read-only, so there is no upload, rehearsal or start step.
+2. Follow it exactly like a send job (`GET /v1/jobs/{id}?since=N` or `/events`). `progress` is
+   `{phase: "download", done, total}` in bytes while the audio is read.
+3. When `state` is `done`, `result` is the sample's details (`slot, name, frames, rate, root, bandwidth, tune, playback,
+   partner`) plus `bytes, elapsed_s, read_kbps`, and `GET /v1/jobs/{id}/audio?format=wav|pcm` returns the audio (same
+   headers as above; `409 wrong_state` before it is done, `400 not_a_download` for a send job).
+4. On failure `error.code` is `not_found` (no sample in that slot), `read_failed`, `verify_failed` (the S2000
+   advertised a different size), `needs_attention` or `busy`.
+
+Every job (send or download) has `kind` and `slot` (`null` for sends); `GET /v1/jobs` lists both kinds.
+The server keeps the last 50 finished jobs in memory (unfinished ones are never dropped). When a download job is dropped,
+its folder on the Pi is deleted too, so fetch its audio soon after it finishes; send evidence is kept.
+
 **SSE** (`/events`): events `log` (`{n, t, msg}`), `progress`, `state` (`{state}`), then `end` (`{result, error}`),
 plus `: keep-alive` comments.
 
 ## Evidence kept on the Pi (`--data-dir`, default `./s2k-data/jobs/<id>/`)
-`NAME.wav` is exactly the audio that was sent; `transcript.log` has every SCSI command; `NAME-expected.pcm` and
+`NAME.wav` is exactly the audio that was sent (for a download job, the audio that was read); `transcript.log` has every SCSI command; `NAME-expected.pcm` and
 `NAME-readback.pcm` appear if a read-back comparison failed.
 
 ## Example (curl)
@@ -110,7 +125,8 @@ maps onto that directly:
 * one job per queue run, with a sample entry per queued file (the GUI supplies the PCM at its own rate, no resampling
   needed, and an optional per-sample `root`);
 * `progress` and the log drive the progress UI;
-* `GET /v1/samples/{slot}/audio` serves receiving.
+* receiving uses a download job (`POST /v1/samples/{slot}/download`) for a progress bar, or
+  `GET /v1/samples/{slot}/audio` when none is needed.
 
 A Python GUI can import `s2kclient.py` (standard library only) or speak HTTP directly. Deleting or renaming samples is not
 implemented. Check AKAISDS's own licence before sharing code with it (its README says LGPLv3, GitHub's sidebar says GPL-3.0);

@@ -17,6 +17,8 @@ All notable changes to this project are recorded here. The format follows
 - Any sample rate from 4000 to 65535 Hz, sent without resampling (`--rate native`, or any `rate` in the API): the header's
   bandwidth and pitch offset make it play at the right pitch, as AKAISDS does over MIDI. Downloads accept any such rate.
   `GET /v1/samples/{slot}` reports the pitch offset as `tune`.
+- Download jobs with progress: `POST /v1/samples/{slot}/download`, followed like a send job, then
+  `GET /v1/jobs/{id}/audio`. `s2ksend --download` uses them and shows progress; `s2kclient` has `download()`.
 - Error code `list_mismatch` for a wrong sample list after a batch (reported as `verify_failed` in 0.8.0).
 
 ### Changed

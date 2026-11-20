@@ -101,6 +101,35 @@ meta, wav32 = c.sample_audio(slot32, 'wav')
 with wave.open(io.BytesIO(wav32)) as w:
     assert w.getframerate() == 32000 and w.readframes(w.getnframes()) == bytes(range(256)) * 50
 
+# a download as a job: progress while the audio is read, then the audio from the job
+seen = []
+info, pcm = c.download(slot32, on_progress=seen.append)
+assert pcm == bytes(range(256)) * 50 and (info['name'].strip(), info['rate'], info['slot']) == ('RATE32K', 32000, slot32), info
+assert info['bytes'] == len(pcm) and 'tune' in info and 'header_hex' not in info, info
+reads = [p for p in seen if p.get('phase') == 'download']
+assert reads and reads[-1]['done'] == reads[-1]['total'] == len(pcm), seen
+dl = next(j for j in c.jobs() if j['kind'] == 'download')
+assert dl['state'] == 'done' and dl['samples'] == 1, dl
+with wave.open(io.BytesIO(c.download_audio(dl['id'], 'wav'))) as w:
+    assert w.getframerate() == 32000
+assert {f['name'] for f in c.job_files(dl['id'])} == {'RATE32K.wav', 'transcript.log'}
+e = err(lambda: c.download(99), 'not_found')
+assert 'slot 99' in e.message, e.message
+err(lambda: c.download_audio(final['id']), 'not_a_download', 400)
+err(lambda: c._json('POST', f"/v1/jobs/{dl['id']}/start"), 'wrong_state', 409)
+# only finished jobs are dropped from memory, and a dropped download's copy of the audio is deleted from the Pi
+s2kserver.KEEP_JOBS, keep_was = 3, s2kserver.KEEP_JOBS
+pending = c.create_job([core.Item('PENDING', bytes(200), 44100, 'p', False)])
+first_dl = c.start_download(slot32)['id']
+c.wait(first_dl)
+for _ in range(4):
+    c.wait(c.start_download(slot32)['id'])
+ids = [j['id'] for j in c.jobs()]
+assert pending['id'] in ids and first_dl not in ids and len(ids) == 3, ids
+assert not os.path.exists(os.path.join(tmp, 'data', 'jobs', first_dl))
+assert os.path.exists(os.path.join(tmp, 'data', 'jobs', final['id']))           # send evidence is kept
+s2kserver.KEEP_JOBS = keep_was
+
 # a wrong sample list after the batch has its own error code, and the bus is left needing attention
 class Surprise(core.MockS2000):
     def _sysex(self, f):
@@ -234,6 +263,7 @@ rc, out = cli('--list'); assert rc == 0 and out.count("'") >= 6 and 'PAD2' in ou
 rc, out = cli('--check', '1', os.path.join(tmp, 'pad2.wav'))
 assert rc == 0 and 'audio MATCHES the file byte-for-byte' in out and '22050 Hz' in out, out
 rc, out = cli('--download', '1', os.path.join(tmp, 'dl.wav')); assert rc == 0 and os.path.getsize(os.path.join(tmp, 'dl.wav')) > 44, out
+assert 'reading audio: 100%' in out and 'KB/s)' in out, out
 rc, out = cli('--pairs'); assert rc == 0, out
 rc, out = cli('--yes', '--rate', 'native', '--name', 'NAT32', t32 := mkwav('t32.wav', 1, 32000, 0.3))
 assert rc == 0 and 'audio verified byte-for-byte' in out, out
