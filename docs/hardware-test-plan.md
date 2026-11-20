@@ -70,7 +70,8 @@ Batch mode assumes the S2000 adds each new sample at the end of its list, in the
 4. For each, `s2ksend --pairs`: record whether LOOP3 and LOOP4 are linked, and their partner fields.
 
 ## 8. Download
-`s2ksend --download SLOT out.wav` for KICKA and one LOOP2 half, then `s2ksend --check SLOT out.wav` on each: audio matches.
+`s2ksend --download SLOT out.wav` for KICKA and one LOOP2 half: progress lines up to 100%, then `s2ksend --check SLOT out.wav`
+on each: audio matches. Record the read KB/s that `--download` prints for the larger one.
 
 ## 9. Service
 Install the systemd unit (header of `s2k-server.service`), reboot the Pi, then `s2ksend --status` from the client.

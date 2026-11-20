@@ -80,6 +80,10 @@ class SendError(Exception):
     pass
 
 
+class NoSuchSample(LookupError):
+    """There is no sample in the requested slot."""
+
+
 class ListMismatch(SendError):
     """Every sample was sent and verified, but the S2000's lists afterwards are not what was expected."""
 
@@ -1079,7 +1083,7 @@ def op_inventory(sess):
 def op_sample(sess, slot):
     inv = sess.inventory()
     if not 0 <= slot < len(inv.samples):
-        raise LookupError(f'no sample in slot {slot}')
+        raise NoSuchSample(f'no sample in slot {slot}')
     return sample_info(slot, inv.samples[slot], sess.read_header(slot))
 
 

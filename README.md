@@ -67,7 +67,7 @@ sox is needed only for audio that is not already 16-bit WAV at 44.1 or 22.05 kHz
     s2ksend kick.wav snare.wav hats.wav loop.wav          # send a batch (asks you to type SEND)
     s2ksend loop.wav --name LOOP --rate 22050 --block 32768 --no-verify-pcm --yes
     s2ksend --check 6 kick.wav                            # read-only: header and audio compared with a file
-    s2ksend --download 6 kick_back.wav                    # read-only: save a sample as WAV
+    s2ksend --download 6 kick_back.wav                    # read-only: save a sample as WAV, with progress
     s2ksend --pairs                                       # read-only: stereo -L/-R pairs and their partner fields
     s2ksend --rehearse-only kick.wav loop.wav             # plan and rehearse locally, server not contacted
     s2ksend --jobs                                        # recent send jobs

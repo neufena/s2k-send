@@ -83,6 +83,24 @@ class S2KClient:
                 'frames': int(h.get('X-S2K-Frames', 0)), 'root': int(h.get('X-S2K-Root', 0))}
         return info, data
 
+    def start_download(self, slot):
+        """Queue a download job for the sample in `slot`; follow it like a send job (job(), wait(), events)."""
+        return self._json('POST', f'/v1/samples/{int(slot)}/download')
+
+    def download_audio(self, job_id, fmt='pcm'):
+        """A finished download's audio: raw PCM by default (as sample_audio()), or fmt='wav'."""
+        return self._request('GET', f'/v1/jobs/{job_id}/audio?format={fmt}')[2]
+
+    def download(self, slot, fmt='pcm', on_log=None, on_progress=None):
+        """Download with progress: returns (info, bytes) like sample_audio(); on_progress receives
+        {'phase': 'download', 'done', 'total'} (bytes) as the audio is read. Raises S2KError if the job fails."""
+        job = self.start_download(slot)
+        final = self.wait(job['id'], on_log, on_progress)
+        if final['state'] != 'done':
+            err = final['error'] or {}
+            raise S2KError(0, err.get('code', final['state']), err.get('message', f'download {final["state"]}'), err)
+        return final['result'], self.download_audio(job['id'], fmt)
+
     def pairs(self):
         return self._json('GET', '/v1/pairs')
 
