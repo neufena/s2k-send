@@ -12,7 +12,7 @@ After=network-online.target
 
 [Service]
 Type=simple
-ExecStart=/opt/s2k-send/bin/s2kserver --data-dir /var/lib/s2k-send --target 6 --initiator 7
+ExecStart=/opt/s2k-send/bin/s2kserver --data-dir /var/lib/s2k-send --target 6 --initiator 0
 Restart=on-failure
 RestartSec=5
 
