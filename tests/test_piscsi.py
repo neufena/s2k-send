@@ -169,4 +169,13 @@ os.environ.pop('FAIL_AFTER')
 assert bus.state == 'needs_attention' and not fake.active and pm.info()['pending']
 bus.recover()
 assert bus.state == 'idle' and fake.active and fake.dev == BEFORE
+# the keep-bus wait is reported as a state, not left to look like a fault
+import time
+rb = core.BusManager(mock=core.MockS2000(samples=[]), keep_bus=0)
+assert rb.status()['piscsi_restore'] is None
+rb._restart_at = time.monotonic() + 15
+st = rb.status()['piscsi_restore']
+assert st['state'] == 'scheduled' and 14 <= st['restart_in_s'] <= 15, st
+rb._restoring = True
+assert rb.status()['piscsi_restore'] == {'state': 'restoring', 'restart_in_s': 0}
 print('test_piscsi OK')
