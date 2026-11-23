@@ -216,7 +216,7 @@ def send(c, a):
         err = snap['error'] or {}
         say(f'STOP: the server rehearsal failed: {err.get("message", snap["state"])}')
         return 1
-    say(f'server rehearsal OK ({snap["rehearsal"]["commands"]} commands against the simulated S2000)')
+    say(f'server rehearsal OK ({snap["rehearsal"]["commands"]} commands, run on a simulated S2000 before touching the real one)')
     if not a.yes:
         say(f'About to SEND {len(items)} sample(s), {total} bytes in all, to the S2000.')
         say('Make sure the Mac is off or disconnected, and that nothing on the S2000 needs saving: it will')
@@ -236,7 +236,7 @@ def send(c, a):
     if final['state'] == 'done':
         r = final['result']
         say(f'All done. {len(r["samples"])} sample(s), {r["audio_bytes"] / 1000:.0f} KB of audio in {r["elapsed_s"]} s '
-            f'overall ({r["overall_kbps"]} KB/s including every check), {r["commands"]} commands'
+            f'overall ({r["overall_kbps"]} KB/s including set-up and every check, so low for small files), {r["commands"]} commands'
             + (f'; audio writes {r["write_kbps"]} KB/s (block {r["block"]})' if r['write_kbps'] else '')
             + (f'; verify reads {r["verify_kbps"]} KB/s' if r['verify_kbps'] else ''))
         say('Slots: ' + ', '.join(f'{s["name"].strip()}={s["slot"]}' for s in r['samples']))
