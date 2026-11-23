@@ -25,7 +25,7 @@ Default address `http://<pi>:8420`. All endpoints are under `/v1/`. CORS is open
 ## Server and bus
 | Endpoint | Reply |
 |---|---|
-| `GET /v1/status` | `{server, version, api, bus: {state: idle\|busy\|needs_attention, piscsi, target, initiator, mock, keep_bus_s, piscsi_snapshot, last_restore}, jobs: {current, queued}}` (`last_restore`: `{restored, attached, detached, failed, note}` from the most recent PiSCSI restart) |
+| `GET /v1/status` | `{server, version, api, bus: {state: idle\|busy\|needs_attention, piscsi, piscsi_restore, target, initiator, mock, keep_bus_s, piscsi_snapshot, last_restore}, jobs: {current, queued}}` (`piscsi_restore`: `null`, or `{state: scheduled\|restoring, restart_in_s}` while the keep-bus timer holds PiSCSI stopped before restarting it; `last_restore`: `{restored, attached, detached, failed, note}` from the most recent PiSCSI restart) |
 | `GET /v1/piscsi` | `{state, restore_mode, devices: [{id, lun, type, file, protected}] \| null, snapshot: {taken, pending, devices} \| null, snapshot_devices}`: the PiSCSI service state, its attached devices (read from `scsictl -l`; `null` when stopped or unmanaged) and the setup the server saved before stopping it |
 | `POST /v1/probe` | INQUIRY of the S2000: `{status, bytes, vendor, product}` |
 | `POST /v1/recover` | after a failed send **and a power-cycle**: restart PiSCSI, accept work again |

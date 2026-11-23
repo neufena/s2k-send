@@ -79,8 +79,12 @@ def show_status(c):
     b = st['bus']
     say(f'server {st["version"]} (API {st["api"]}) at {c.base}' + ('  [SIMULATED S2000]' if b['mock'] else ''))
     say(f'bus: {b["state"]}; PiSCSI: {b["piscsi"]}; S2000 SCSI ID {b["target"]}, server is ID {b["initiator"]}')
+    rs = b.get('piscsi_restore')
+    if rs:
+        say('PiSCSI is being restarted now' if rs['state'] == 'restoring' else
+            f'PiSCSI is deliberately kept stopped for the next request; it restarts in about {rs["restart_in_s"]} s')
     snap = b.get('piscsi_snapshot')
-    if snap and snap['pending']:
+    if snap and snap['pending'] and not rs:
         say(f'PiSCSI setup saved ({snap["devices"]} device(s)); it will be put back when PiSCSI restarts')
     lr = b.get('last_restore')
     if lr:
