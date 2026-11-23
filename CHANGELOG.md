@@ -26,6 +26,8 @@ All notable changes to this project are recorded here. The format follows
 ### Changed
 - Sent samples have playback type 2 (No looping), as one sent over MIDI SDS does; it was 3 (One-shot) (found in AKAISDS's
   hardware test, 20/11/2026).
+- The rehearsal line says the rehearsal runs on a simulated S2000 before the real one is touched (it read as mock mode in a
+  real run), and the overall KB/s note says it includes set-up and is low for small files (AKAISDS's hardware test).
 - Requires Python 3.13 or later (current Raspberry Pi OS); older releases are not supported.
 - `s2kserver --data-dir` defaults to `/var/lib/s2k-send`, as the systemd unit uses, so jobs and the PiSCSI snapshot are
   shared between a server started by hand and the service (`./s2k-data` with `--mock`).

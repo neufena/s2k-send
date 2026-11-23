@@ -1449,7 +1449,7 @@ def rehearse(items, root, verify, say, block=PCM_BLOCK):
         idx = sess.send_sample(it.name, root if it.root is None else it.root, it.pcm, verify, rate=it.rate)
         if m.live()[idx]['pcm'] != it.pcm:
             raise SendError('rehearsal: audio mismatch')
-    say(f'rehearsal OK ({sess.commands} commands against the simulated S2000)')
+    say(f'rehearsal OK ({sess.commands} commands, run on a simulated S2000 before touching the real one)')
     return sess.commands
 
 
