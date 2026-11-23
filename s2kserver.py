@@ -203,7 +203,7 @@ class JobManager:
         try:
             n = core.rehearse(job.items(), job.root, job.verify, lambda m: None, job.block)
             job.rehearsal = {'ok': True, 'commands': n}
-            job.add_log(f'rehearsal OK ({n} commands against the simulated S2000)')
+            job.add_log(f'rehearsal OK ({n} commands, run on a simulated S2000 before touching the real one)')
             job.set_state('ready')
         except SendError as e:
             job.rehearsal = {'ok': False, 'message': str(e)}
