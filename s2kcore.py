@@ -1296,6 +1296,7 @@ class BusManager:
         self.state = 'idle'                  # idle | busy | needs_attention
         self._timer = None
         self._tlock = threading.Lock()
+        self._restart_at = None              # time.monotonic() when the keep-bus timer will restart PiSCSI
         self._restoring = False              # the keep-bus timer is restarting PiSCSI (a few seconds)
 
     # -- status
@@ -1304,8 +1305,17 @@ class BusManager:
             return 'unmanaged'
         return self.pm.state()
 
+    def restore_state(self):
+        """'restoring' (PiSCSI is being restarted now), 'scheduled' (kept stopped, restart due in restart_in_s) or None."""
+        if self._restoring:
+            return {'state': 'restoring', 'restart_in_s': 0}
+        at = self._restart_at
+        if at is not None and self.state == 'idle':
+            return {'state': 'scheduled', 'restart_in_s': max(0, round(at - time.monotonic()))}
+        return None
+
     def status(self):
-        return {'state': self.state, 'piscsi': self.piscsi_state(), 'target': self.target,
+        return {'state': self.state, 'piscsi': self.piscsi_state(), 'piscsi_restore': self.restore_state(), 'target': self.target,
                 'initiator': self.initiator, 'mock': self.mock is not None, 'keep_bus_s': self.keep_bus,
                 'piscsi_snapshot': self.pm.info(), 'last_restore': self.last_restore}
 
@@ -1319,10 +1329,12 @@ class BusManager:
             if self._timer:
                 self._timer.cancel()
                 self._timer = None
+            self._restart_at = None
 
     def _timed_restart(self):
         if not self.lock.acquire(blocking=False):
             return                           # a real operation owns the bus; it schedules its own restart
+        self._restart_at = None
         self._restoring = True               # set only while holding the lock, so readers never wait on a real job
         try:
             if self.state == 'idle':
@@ -1336,6 +1348,7 @@ class BusManager:
             return
         if self.keep_bus > 0:
             with self._tlock:
+                self._restart_at = time.monotonic() + self.keep_bus
                 self._timer = threading.Timer(self.keep_bus, self._timed_restart)
                 self._timer.daemon = True
                 self._timer.start()
@@ -1417,6 +1430,7 @@ class BusManager:
             if self._timer:
                 self._timer.cancel()
                 self._timer = None
+                self._restart_at = None
                 pending = True
         if pending and self.state == 'idle':
             self._restore()

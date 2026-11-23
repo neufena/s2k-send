@@ -6,6 +6,8 @@ All notable changes to this project are recorded here. The format follows
 ## [Unreleased]
 
 ### Added
+- `GET /v1/status` reports `bus.piscsi_restore` (`scheduled` with seconds to go, or `restoring`) and `s2ksend --status` says
+  PiSCSI is kept stopped on purpose and when it restarts, rather than looking like a fault (found in AKAISDS's hardware test).
 - Python packaging (`pyproject.toml`): `pip install` gives the `s2ksend` and `s2kserver` commands.
 - `make install` puts the `s2kexec` bus helper on `PATH`; the server finds it there when installed as a package.
 - MIT licence for the project's own code.
