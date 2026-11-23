@@ -124,6 +124,10 @@ class JobManager:
         if block not in BLOCKS:
             raise ApiError(400, 'bad_block', f'block must be one of {list(BLOCKS)}')
         clean, seen, total = [], set(), 0
+        fixed = core.pad_pair_names([sp['name'] for sp in specs if isinstance(sp, dict) and isinstance(sp.get('name'), str)])
+        for sp in specs:
+            if isinstance(sp, dict) and sp.get('name') in fixed:
+                sp['name'] = fixed[sp['name']]
         for i, sp in enumerate(specs):
             if not isinstance(sp, dict):
                 raise ApiError(400, 'bad_sample', f'sample {i} is not an object')
@@ -149,7 +153,10 @@ class JobManager:
             clean.append({'name': name, 'rate': rate, 'frames': frames, **({'root': sroot} if sroot is not None else {})})
         if total > MAX_TOTAL_BYTES:
             raise ApiError(413, 'too_big', f'{total} bytes of audio is more than the {MAX_TOTAL_BYTES} byte limit')
-        return self._add(lambda jid, d: Job(jid, clean, root, verify, block, d))
+        job = self._add(lambda jid, d: Job(jid, clean, root, verify, block, d))
+        for old, new in fixed.items():
+            job.add_log(f'stereo name {old!r} sent as {new!r}: the S2000 only links -L/-R pairs named in that padded form')
+        return job
 
     def create_download(self, slot):
         """A read-only job: queued at once (no upload, rehearsal or confirmation needed)."""

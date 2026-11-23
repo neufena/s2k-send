@@ -54,4 +54,8 @@ assert lay['extra_entries'] == 36 and lay['first_address'] == 0x6024 and lay['la
 assert s.partner_map(real29)[2] is False                      # a plain "base + 12 x slot" rule does NOT hold
 # a contiguous table has no holes
 assert s.pair_layout([(0, 0x603c, 1, 0x6030), (2, 0x6054, 3, 0x6048)])['holes'] == []
+# unpadded -L/-R halves are padded to the form the S2000 links; lone or already padded names are left alone
+assert s.pad_pair_names(['LOOPS-L', 'LOOPS-R']) == {'LOOPS-L': 'LOOPS     -L', 'LOOPS-R': 'LOOPS     -R'}
+assert s.pad_pair_names(['LOOP2     -L', 'LOOP2     -R', 'KICK-L', 'SNARE']) == {}
+assert s.pad_pair_names(['A-L', 'B-R']) == {}
 print('test_pairs OK')
