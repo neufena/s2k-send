@@ -135,6 +135,7 @@ def sample_header(name, root, frames, rate=RATE):
     h[1] = bandwidth                      # 1 = 20 kHz (44.1 kHz engine), 0 = 10 kHz (22.05 kHz engine)
     h[20:22] = encode_tune(tune)
     h[2] = root
+    h[19] = 2                             # playback type: No looping, as a sample sent over MIDI SDS gets
     h[3:15] = encode_name(name)
     h[26:30] = frames.to_bytes(4, 'little')
     h[30:34] = (0).to_bytes(4, 'little')

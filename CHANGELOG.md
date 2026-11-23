@@ -22,6 +22,8 @@ All notable changes to this project are recorded here. The format follows
 - Error code `list_mismatch` for a wrong sample list after a batch (reported as `verify_failed` in 0.8.0).
 
 ### Changed
+- Sent samples have playback type 2 (No looping), as one sent over MIDI SDS does; it was 3 (One-shot) (found in AKAISDS's
+  hardware test, 20/11/2026).
 - Requires Python 3.13 or later (current Raspberry Pi OS); older releases are not supported.
 - `s2kserver --data-dir` defaults to `/var/lib/s2k-send`, as the systemd unit uses, so jobs and the PiSCSI snapshot are
   shared between a server started by hand and the service (`./s2k-data` with `--mock`).
