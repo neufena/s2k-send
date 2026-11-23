@@ -58,4 +58,5 @@ assert s.pair_layout([(0, 0x603c, 1, 0x6030), (2, 0x6054, 3, 0x6048)])['holes'] 
 assert s.pad_pair_names(['LOOPS-L', 'LOOPS-R']) == {'LOOPS-L': 'LOOPS     -L', 'LOOPS-R': 'LOOPS     -R'}
 assert s.pad_pair_names(['LOOP2     -L', 'LOOP2     -R', 'KICK-L', 'SNARE']) == {}
 assert s.pad_pair_names(['A-L', 'B-R']) == {}
+assert s.sample_header('KICK', 60, 100)[19] == 2          # sent samples play with no looping
 print('test_pairs OK')
