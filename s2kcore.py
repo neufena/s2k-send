@@ -873,6 +873,18 @@ def sample_names(base, channels, used=()):
     raise SendError(f'cannot find a free name for {base!r}')
 
 
+def pad_pair_names(names):
+    """The S2000 only links a -L/-R pair whose names are the stem padded to 10 characters then '-L' / '-R' (12 in all).
+    Returns {old: new} for the names that are one half of a pair in `names` but not yet in that form."""
+    fixed = {}
+    for n in names:
+        if n.endswith('-L') and len(n) < 12 and n[:-2] + '-R' in names:
+            stem = n[:-2].rstrip()
+            if stem and len(stem) <= 10:
+                fixed[n], fixed[n[:-2] + '-R'] = stem.ljust(10) + '-L', stem.ljust(10) + '-R'
+    return fixed
+
+
 def plan_items(paths, mono_mix=False, rate='auto', name=None):
     """Load every file (failing early, before the bus is touched) and give every sample a unique Akai name."""
     if name and len(paths) > 1:
