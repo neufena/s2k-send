@@ -1,4 +1,4 @@
-// Prints the wire bytes produced by the hardware-proven C++ reference code so that
+// Prints the wire bytes produced by michaelsanois's hardware-proven S2000 Bridge C++ code (see NOTICE) so that
 // tests/parity.py can compare them with s2ksend.py. Built against the original release
 // headers (not shipped here): g++ -std=c++17 -I<payload> -I<payload>/vendor tests/parity.cpp
 #include "NativeQueries.h"

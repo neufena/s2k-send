@@ -3,7 +3,7 @@
 Send samples to an Akai S2000 over SCSI from a Raspberry Pi with a PiSCSI board.
 
 No disk image and no slow MIDI sample dump: the Pi's PiSCSI board acts as the SCSI **initiator** and talks to the S2000
-through its SCSI-MIDI tunnel (vendor commands 09/0C/0D/0E carrying Akai SysEx), the same channel MESA and ReCycle use.
+through its SCSI-MIDI tunnel (vendor commands 09/0C/0D/0E carrying Akai SysEx).
 
     +-------------------+   HTTP/JSON    +------------------------------+   SCSI   +---------+
     | s2ksend (CLI)     | -------------> | s2kserver  (on the Pi)       | -------> | S2000   |
@@ -14,7 +14,7 @@ through its SCSI-MIDI tunnel (vendor commands 09/0C/0D/0E carrying Akai SysEx), 
   rehearses every job on a simulated S2000 first, verifies every sample by reading it back, and keeps transcripts.
 * **Client** (`s2ksend` CLI, `s2kclient` library): on the same Pi or any computer. Loads and converts audio, names samples,
   uploads PCM and shows progress. A GUI can use the library or the HTTP API directly: see [API.md](API.md).
-* **Home network only**: the server has no authentication.
+* **Home network only**: the server has no authentication (see [Security](#security)).
 
 Scope is sending samples to the S2000 and reading them back. Programs, keygroups, deleting and renaming are left to MIDI tools.
 
@@ -149,10 +149,31 @@ honest. New endpoints go in `s2kserver.py`, then `s2kclient.py`, then the CLI, t
 | `s2kexec.cpp`, `Makefile` | Bus helper: runs one raw SCSI command per request line, no Akai logic |
 | `gpio-source/` | BSD-3-Clause initiator code (SCSI2Pi/PiSCSI-derived) |
 
-## Provenance and licence
-* s2k-send's own code is under the [MIT licence](LICENSE).
-* `gpio-source/` and `s2kexec.cpp` are BSD-3-Clause (SCSI2Pi/PiSCSI-derived); keep `gpio-source/LICENSE` and `NOTICE` with them.
-* The command sequence and encodings follow the S2000 Bridge release (michaelsanois/s2000-bridge) and the MESA II research
-  (michaelsanois/mesa2-research), which independently documents the same sample-import sequence.
-* `SAMPLE_TEMPLATE` in `s2kcore.py` is the 192-byte sample header template captured in that release. Those repositories carry no
-  licence, so **until the author gives permission, treat this package as personal use only and do not redistribute it.**
+## Acknowledgements
+s2k-send would not exist without the work of **michaelsanois**, author of the S2000 Bridge and the MESA II research. He worked
+out how to drive the S2000 over SCSI through its SCSI-MIDI tunnel and published it, and he gave his permission for this project
+to be released. Our thanks and full credit to him.
+
+* [michaelsanois/s2000-bridge](https://github.com/michaelsanois/s2000-bridge): the command sequence, the encodings and the
+  192-byte sample header template (`SAMPLE_TEMPLATE` in `s2kcore.py`) come from this release. Its C++ engine is also the
+  reference our wire-format tests are checked against (`tests/parity.*`, `tests/test_verify.py`).
+* [michaelsanois/mesa2-research](https://github.com/michaelsanois/mesa2-research): independently documents the same
+  sample-import sequence.
+* [SCSI2Pi](https://github.com/uweseimet/scsi2pi) and PiSCSI/RaSCSI: the basis of the BSD-3-Clause initiator code in
+  `gpio-source/` and `s2kexec.cpp`.
+
+See [NOTICE](NOTICE) for the full list.
+
+## Licence
+s2k-send's own code is under the [MIT licence](LICENSE). Material derived from the projects above stays credited as described in
+[NOTICE](NOTICE); `gpio-source/` keeps its own BSD-3-Clause licence and notice. This project is not affiliated with or endorsed
+by Akai, the S2000 Bridge author or the PiSCSI/SCSI2Pi projects.
+
+## Security
+`s2kserver` has **no authentication or encryption** and runs as root on the Pi, because it controls the SCSI bus and
+starts and stops the `piscsi` service. Anyone who can reach its port can send and fetch samples and stop PiSCSI. Run it only on
+a trusted private network, never expose it to the internet or port-forward it, and consider firewalling it to known clients or
+binding it with `--host`. To report a security problem, see [SECURITY.md](SECURITY.md).
+
+## Contributing
+See [CONTRIBUTING.md](CONTRIBUTING.md).
