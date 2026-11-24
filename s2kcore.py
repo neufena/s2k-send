@@ -6,7 +6,7 @@ Used by the server (s2kserver.py, on the Raspberry Pi with the PiSCSI board), by
 The S2000's SCSI port tunnels MIDI SysEx (vendor commands 09 mode / 0C send / 0D status / 0E receive).
 The sequence and encodings follow a hardware-proven implementation (see README.md for provenance).
 """
-__version__ = '0.9.0.dev0'
+__version__ = '1.0.0'
 API_VERSION = 1
 
 import array

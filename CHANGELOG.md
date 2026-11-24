@@ -5,6 +5,8 @@ All notable changes to this project are recorded here. The format follows
 
 ## [Unreleased]
 
+## [1.0.0] - 2026-11-24
+
 ### Added
 - `GET /v1/status` reports `bus.piscsi_restore` (`scheduled` with seconds to go, or `restoring`) and `s2ksend --status` says
   PiSCSI is kept stopped on purpose and when it restarts, rather than looking like a fault (found in AKAISDS's hardware test).
