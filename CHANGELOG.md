@@ -10,7 +10,8 @@ All notable changes to this project are recorded here. The format follows
   PiSCSI is kept stopped on purpose and when it restarts, rather than looking like a fault (found in AKAISDS's hardware test).
 - Python packaging (`pyproject.toml`): `pip install` gives the `s2ksend` and `s2kserver` commands.
 - `make install` puts the `s2kexec` bus helper on `PATH`; the server finds it there when installed as a package.
-- MIT licence for the project's own code.
+- MIT licence for the project's own code, `NOTICE` crediting the S2000 Bridge author (michaelsanois, who gave permission to
+  publish) and SCSI2Pi, and `SECURITY.md` and `CONTRIBUTING.md`.
 - GitHub Actions CI: tests on Python 3.13 and 3.14, `s2kexec` build, package build.
 - This changelog.
 - `GET /v1/jobs/{id}/files[/{name}]` and `s2ksend --jobs` / `--fetch-job ID`: fetch a job's transcript, the audio sent and
@@ -36,6 +37,7 @@ All notable changes to this project are recorded here. The format follows
 - `--list` says "headers" rather than "sample headers": the S2000's count includes more than samples.
 - `run_tests.sh` exits non-zero when a test fails.
 - The systemd unit runs the installed `s2kserver` command.
+- README: acknowledgements replace the "personal use only" provenance warning; security section added.
 
 ### Fixed
 - A batch sent after a sample was deleted on the S2000 failed `verify_failed`: the S2000 puts a new sample in the first

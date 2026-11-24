@@ -1,0 +1,21 @@
+s2k-send
+Copyright (c) 2026 John Mitchell, MIT licence (see LICENSE).
+
+This project builds on the work of others, credited here.
+
+S2000 Bridge and MESA II research, by michaelsanois
+  https://github.com/michaelsanois/s2000-bridge
+  https://github.com/michaelsanois/mesa2-research
+  How to drive an Akai S2000 over SCSI through its SCSI-MIDI tunnel: the command
+  sequence and encodings, and the 192-byte sample header template
+  (SAMPLE_TEMPLATE in s2kcore.py). The Bridge's C++ engine is the reference for the
+  wire-format tests in tests/parity.* and tests/test_verify.py. Those repositories
+  carry no licence; the author gave permission for s2k-send to be published. This
+  material is credited to him and is not covered by s2k-send's MIT licence.
+
+SCSI2Pi and PiSCSI/RaSCSI
+  See gpio-source/NOTICE and gpio-source/LICENSE (BSD-3-Clause) for the initiator
+  code in gpio-source/ and s2kexec.cpp, and their copyright holders.
+
+s2k-send is not affiliated with or endorsed by Akai, the S2000 Bridge author, or
+the SCSI2Pi/PiSCSI projects.

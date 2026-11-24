@@ -57,8 +57,8 @@ def decode_tune(two):
     raw = int.from_bytes(two, 'little')
     return (raw - 0x10000 if raw & 0x8000 else raw) / 256
 
-# Captured MESA wire template for a sample header: type 3, 44.1 kHz, mono, no loop,
-# play-to-end. Only name, root note, length, start/end and rate are patched.
+# Sample header wire template captured from michaelsanois's S2000 Bridge release (see NOTICE), used with his
+# permission. Type 3, 44.1 kHz, mono, no loop, play-to-end. Only name, root note, length, start/end and rate are patched.
 SAMPLE_TEMPLATE = bytes.fromhex(
     "03013c1a1c190c0f0a0a0a0a0a0a0a8000000003000000000000000100000000"
     "0000ff0000000000000000000000000000000000000000000000000000000000"
